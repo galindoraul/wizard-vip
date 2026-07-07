@@ -1,13 +1,16 @@
 #!/bin/bash
-# install.sh — Wizard VIP Skills Installer
+# install.sh — Wizard VIP
 # Downloads and installs ALL skills (standard + VIP) for your Claude environment.
 # Run this script once to install, or again anytime to update.
+# Usage: cd ~/.wizard && claude
 
 QA_REPO_URL="https://github.com/galindoraul/wizard.git"
 VIP_REPO_URL="https://github.com/galindoraul/wizard-vip.git"
-QA_REPO_DIR="$HOME/.wizard/wizard"
-VIP_REPO_DIR="$HOME/.wizard/wizard-vip"
-SKILLS_DIR="$HOME/.claude/skills"
+WIZARD_DIR="$HOME/.wizard"
+REPOS_DIR="$WIZARD_DIR/.repos"
+QA_REPO_DIR="$REPOS_DIR/wizard"
+VIP_REPO_DIR="$REPOS_DIR/wizard-vip"
+SKILLS_DIR="$WIZARD_DIR/.claude/skills"
 
 echo ""
 echo "🧙‍♂️ Wizard VIP"
@@ -20,7 +23,7 @@ if [ -d "$QA_REPO_DIR/.git" ]; then
     cd "$QA_REPO_DIR" && git pull
 else
     echo "📦 Installing standard skills..."
-    mkdir -p "$(dirname "$QA_REPO_DIR")"
+    mkdir -p "$REPOS_DIR"
     git clone "$QA_REPO_URL" "$QA_REPO_DIR"
 fi
 
@@ -30,7 +33,7 @@ if [ -d "$VIP_REPO_DIR/.git" ]; then
     cd "$VIP_REPO_DIR" && git pull
 else
     echo "📦 Installing VIP skills..."
-    mkdir -p "$(dirname "$VIP_REPO_DIR")"
+    mkdir -p "$REPOS_DIR"
     git clone "$VIP_REPO_URL" "$VIP_REPO_DIR"
 fi
 
@@ -66,5 +69,7 @@ fi
 
 echo ""
 echo "───────────────────────────────────"
-echo "✅ Done! $count skill(s) ready to use in Claude."
+echo "✅ Done! $count skill(s) ready."
+echo ""
+echo "To use: cd ~/.wizard && claude"
 echo ""
