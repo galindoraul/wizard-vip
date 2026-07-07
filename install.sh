@@ -2,7 +2,6 @@
 # install.sh — Wizard VIP
 # Downloads and installs ALL skills (standard + VIP) for your Claude environment.
 # Run this script once to install, or again anytime to update.
-# Usage: cd ~/.wizard && claude
 
 WIZARD_DIR="$HOME/.wizard"
 QA_REPO_DIR="$WIZARD_DIR/wizard"
@@ -67,12 +66,23 @@ process_repo() {
     done
 }
 
-echo ""
 echo "🔗 Installed:"
 process_repo "$QA_REPO_DIR" "wizard"
 process_repo "$VIP_REPO_DIR" "wizard-vip"
 
+# Add wizard alias with auto-update
+SHELL_RC="$HOME/.zshrc"
+ALIAS_LINE='alias wizard="cd ~/.wizard && (cd wizard && git pull -q &) 2>/dev/null; (cd wizard-vip && git pull -q &) 2>/dev/null; claude"'
+if grep -q 'alias wizard=' "$SHELL_RC" 2>/dev/null; then
+    sed -i '' 's|alias wizard=.*|'"$ALIAS_LINE"'|' "$SHELL_RC"
+else
+    echo '' >> "$SHELL_RC"
+    echo "$ALIAS_LINE" >> "$SHELL_RC"
+fi
+echo ""
+echo "   ⚡ Alias 'wizard' ready (auto-updates on launch)"
+
 echo ""
 echo "───────────────────────────────────"
-echo "✅ Done! Use: cd ~/.wizard && claude"
+echo "✅ Done! Restart terminal, then type: wizard"
 echo ""
