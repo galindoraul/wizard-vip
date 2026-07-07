@@ -1,0 +1,11 @@
+{
+  "files.exclude": {
+    ".claude/skills/click2sync-status-checker": false,
+    ".claude/skills/click2sync-weekly-report": false,
+  },
+
+  "search.exclude": {
+     ".claude/skills/click2sync-status-checker": false,
+    ".claude/skills/click2sync-weekly-report": false,
+  },
+}
