@@ -4,72 +4,75 @@
 # Run this script once to install, or again anytime to update.
 # Usage: cd ~/.wizard && claude
 
-QA_REPO_URL="https://github.com/galindoraul/wizard.git"
-VIP_REPO_URL="https://github.com/galindoraul/wizard-vip.git"
 WIZARD_DIR="$HOME/.wizard"
-REPOS_DIR="$WIZARD_DIR/.repos"
-QA_REPO_DIR="$REPOS_DIR/wizard"
-VIP_REPO_DIR="$REPOS_DIR/wizard-vip"
-SKILLS_DIR="$WIZARD_DIR/.claude/skills"
+QA_REPO_DIR="$WIZARD_DIR/wizard"
+VIP_REPO_DIR="$WIZARD_DIR/wizard-vip"
+CLAUDE_DIR="$WIZARD_DIR/.claude"
 
 echo ""
 echo "🧙‍♂️ Wizard VIP"
 echo "───────────────────────────────────"
 echo ""
 
-# Clone or update standard repo
+# Clone or update repos
+mkdir -p "$WIZARD_DIR"
 if [ -d "$QA_REPO_DIR/.git" ]; then
-    echo "📥 Updating standard skills..."
+    echo "📥 Updating wizard..."
     cd "$QA_REPO_DIR" && git pull
 else
-    echo "📦 Installing standard skills..."
-    mkdir -p "$REPOS_DIR"
-    git clone "$QA_REPO_URL" "$QA_REPO_DIR"
+    echo "📦 Cloning wizard..."
+    git clone https://github.com/galindoraul/wizard.git "$QA_REPO_DIR"
 fi
 
-# Clone or update VIP repo
 if [ -d "$VIP_REPO_DIR/.git" ]; then
-    echo "📥 Updating VIP skills..."
+    echo "📥 Updating wizard-vip..."
     cd "$VIP_REPO_DIR" && git pull
 else
-    echo "📦 Installing VIP skills..."
-    mkdir -p "$REPOS_DIR"
-    git clone "$VIP_REPO_URL" "$VIP_REPO_DIR"
+    echo "📦 Cloning wizard-vip..."
+    git clone https://github.com/galindoraul/wizard-vip.git "$VIP_REPO_DIR"
 fi
 
-# Auto-detect and symlink all skills from both repos
-mkdir -p "$SKILLS_DIR"
-count=0
+# Clean old symlinks
+rm -rf "$CLAUDE_DIR"
+mkdir -p "$CLAUDE_DIR"
+
+# Process all .claude/ contents from a repo
+process_repo() {
+    local repo_dir="$1"
+    local label="$2"
+    local src="$repo_dir/.claude"
+
+    [ ! -d "$src" ] && return
+
+    for subdir in "$src"/*/; do
+        [ ! -d "$subdir" ] && continue
+        subdir_name=$(basename "$subdir")
+        target="$CLAUDE_DIR/$subdir_name"
+        mkdir -p "$target"
+
+        for item in "$subdir"*/; do
+            [ ! -d "$item" ] && continue
+            item_name=$(basename "$item")
+            ln -sf "$item" "$target/$item_name"
+            echo "   ✅ $subdir_name/$item_name ($label)"
+        done
+    done
+
+    for file in "$src"/*; do
+        [ -d "$file" ] && continue
+        [ ! -f "$file" ] && continue
+        file_name=$(basename "$file")
+        ln -sf "$file" "$CLAUDE_DIR/$file_name"
+        echo "   ✅ $file_name ($label)"
+    done
+}
+
 echo ""
-echo "🔗 Installed skills:"
-
-QA_SKILLS_SRC="$QA_REPO_DIR/.claude/skills"
-if [ -d "$QA_SKILLS_SRC" ]; then
-    for skill_dir in "$QA_SKILLS_SRC"/*/; do
-        if [ -f "$skill_dir/SKILL.md" ]; then
-            skill_name=$(basename "$skill_dir")
-            ln -sf "$skill_dir" "$SKILLS_DIR/$skill_name"
-            echo "   ✅ /$skill_name"
-            count=$((count + 1))
-        fi
-    done
-fi
-
-VIP_SKILLS_SRC="$VIP_REPO_DIR/.claude/skills"
-if [ -d "$VIP_SKILLS_SRC" ]; then
-    for skill_dir in "$VIP_SKILLS_SRC"/*/; do
-        if [ -f "$skill_dir/SKILL.md" ]; then
-            skill_name=$(basename "$skill_dir")
-            ln -sf "$skill_dir" "$SKILLS_DIR/$skill_name"
-            echo "   ✅ /$skill_name ⭐"
-            count=$((count + 1))
-        fi
-    done
-fi
+echo "🔗 Installed:"
+process_repo "$QA_REPO_DIR" "wizard"
+process_repo "$VIP_REPO_DIR" "wizard-vip"
 
 echo ""
 echo "───────────────────────────────────"
-echo "✅ Done! $count skill(s) ready."
-echo ""
-echo "To use: cd ~/.wizard && claude"
+echo "✅ Done! Use: cd ~/.wizard && claude"
 echo ""
