@@ -1,5 +1,5 @@
 #!/bin/bash
-# install-vip.sh — Wizard VIP Skills Installer
+# install.sh — Wizard VIP Skills Installer
 # Downloads and installs ALL skills (standard + VIP) for your Claude environment.
 # Run this script once to install, or again anytime to update.
 
@@ -10,7 +10,7 @@ VIP_REPO_DIR="$HOME/.wizard/wizard-vip"
 SKILLS_DIR="$HOME/.claude/skills"
 
 echo ""
-echo "🧙‍♂️ Wizard VIP — Skills Installer"
+echo "🧙‍♂️ Wizard VIP"
 echo "───────────────────────────────────"
 echo ""
 
@@ -20,7 +20,7 @@ if [ -d "$QA_REPO_DIR/.git" ]; then
     cd "$QA_REPO_DIR" && git pull
 else
     echo "📦 Installing standard skills..."
-    mkdir -p "$QA_REPO_DIR"
+    mkdir -p "$(dirname "$QA_REPO_DIR")"
     git clone "$QA_REPO_URL" "$QA_REPO_DIR"
 fi
 
@@ -30,7 +30,7 @@ if [ -d "$VIP_REPO_DIR/.git" ]; then
     cd "$VIP_REPO_DIR" && git pull
 else
     echo "📦 Installing VIP skills..."
-    mkdir -p "$VIP_REPO_DIR"
+    mkdir -p "$(dirname "$VIP_REPO_DIR")"
     git clone "$VIP_REPO_URL" "$VIP_REPO_DIR"
 fi
 
@@ -40,23 +40,29 @@ count=0
 echo ""
 echo "🔗 Installed skills:"
 
-for skill_dir in "$QA_REPO_DIR"/*/; do
-    if [ -f "$skill_dir/SKILL.md" ]; then
-        skill_name=$(basename "$skill_dir")
-        ln -sf "$skill_dir" "$SKILLS_DIR/$skill_name"
-        echo "   ✅ /$skill_name"
-        count=$((count + 1))
-    fi
-done
+QA_SKILLS_SRC="$QA_REPO_DIR/.claude/skills"
+if [ -d "$QA_SKILLS_SRC" ]; then
+    for skill_dir in "$QA_SKILLS_SRC"/*/; do
+        if [ -f "$skill_dir/SKILL.md" ]; then
+            skill_name=$(basename "$skill_dir")
+            ln -sf "$skill_dir" "$SKILLS_DIR/$skill_name"
+            echo "   ✅ /$skill_name"
+            count=$((count + 1))
+        fi
+    done
+fi
 
-for skill_dir in "$VIP_REPO_DIR"/*/; do
-    if [ -f "$skill_dir/SKILL.md" ]; then
-        skill_name=$(basename "$skill_dir")
-        ln -sf "$skill_dir" "$SKILLS_DIR/$skill_name"
-        echo "   ✅ /$skill_name ⭐"
-        count=$((count + 1))
-    fi
-done
+VIP_SKILLS_SRC="$VIP_REPO_DIR/.claude/skills"
+if [ -d "$VIP_SKILLS_SRC" ]; then
+    for skill_dir in "$VIP_SKILLS_SRC"/*/; do
+        if [ -f "$skill_dir/SKILL.md" ]; then
+            skill_name=$(basename "$skill_dir")
+            ln -sf "$skill_dir" "$SKILLS_DIR/$skill_name"
+            echo "   ✅ /$skill_name ⭐"
+            count=$((count + 1))
+        fi
+    done
+fi
 
 echo ""
 echo "───────────────────────────────────"
