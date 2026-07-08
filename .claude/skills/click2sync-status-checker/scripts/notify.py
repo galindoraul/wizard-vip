@@ -13,7 +13,7 @@ from datetime import datetime, timedelta
 WEBHOOK_URL = "https://chat.googleapis.com/v1/spaces/AAQA6X4LVDY/messages?key=AIzaSyDdI0hCZtE6vySjMm-WEfRq3CPzqKqqsHI&token=9y7jxKd60u_-m6D2OvDktHb3vBnwOnzFsN0y4snwe5w"
 SPACE_NAME = "spaces/AAQA6X4LVDY"
 
-SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
+SCRIPTS_DIR = os.path.dirname(os.path.realpath(__file__))
 CACHE_DIR = "/tmp"
 MEMBERS_CACHE_TTL = 3600  # 1 hour
 

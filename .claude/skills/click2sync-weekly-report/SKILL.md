@@ -47,7 +47,7 @@ If any script fails with "OAuth" or "401" or "auth" errors, tell the user:
 
 > Tu sesión expiró. Para renovarla:
 > 1. Abre https://www.internalfb.com/intern/jf/authenticate/
-> 2. Busca "Legacy Options"
-> 3. Copia UID y NONCE
-> 4. Corre: `jf auth --skip-legacy-auth-upgrade <UID> <NONCE>`
+> 2. Da click en "Generate new token"
+> 3. Copia URL
+> 4. Pegala en tu terminal y da enter
 > 5. Vuelve a correr /click2sync-weekly-report

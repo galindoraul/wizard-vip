@@ -28,13 +28,13 @@ except ImportError:
 # Column definitions: (header, json_key, width, header_bg_color)
 COLUMNS = [
     ("Project ID", "projectId", 14, "1A3A5C"),
-    ("Created By", "createdBy", 13, "1A3A5C"),
-    ("Request No", "requestNo", 13, "1A3A5C"),
-    ("Assigned To", "assignTo", 15, "8B6D1A"),
+    ("Created By", "createdBy", 17, "1A3A5C"),
+    ("Request No", "requestNo", 15, "1A3A5C"),
+    ("Assigned To", "assignTo", 17, "8B6D1A"),
     ("Peer Reviewer", "peerReviewer", 17, "1A3A5C"),
-    ("Short Description", "shortDescription", 30, "1A3A5C"),
-    ("Requirement Type", "requirementType", 20, "1A3A5C"),
-    ("Requirement Subtype", "requirementSubtype", 23, "1A3A5C"),
+    ("Short Description", "shortDescription", 50, "1A3A5C"),
+    ("Requirement Type", "requirementType", 27, "1A3A5C"),
+    ("Requirement Subtype", "requirementSubtype", 27, "1A3A5C"),
     ("Module/Feature", "moduleFeature", 18, "8B6D1A"),
     ("Team", "team", 17, "8B6D1A"),
     ("Number of Defective Products", "numberOfDefectiveProducts", 32, "1A3A5C"),
@@ -71,15 +71,22 @@ COLUMNS = [
     ("Closed On", "closedOn", 13, "1A3A5C"),
     ("ForClosing", "forClosing", 14, "1A3A5C"),
     ("Action", "action", 10, "1A3A5C"),
-    ("Peer Review Checklist Reviewed", "peerReviewChecklist", 34, "1A4B6E"),
+    ("Peer Review Checklist Reviewed", "peerReviewChecklist", 14, "1A4B6E"),
     ("Estimation", "estimationLink", 14, "1A4B6E"),
 ]
 
 GRAY_FILL = PatternFill(start_color="D4D4D8", end_color="D4D4D8", fill_type="solid")
-PERSON_FILL_A = PatternFill(start_color="FFFFFF", end_color="FFFFFF", fill_type="solid")
-PERSON_FILL_B = PatternFill(start_color="F2F2F2", end_color="F2F2F2", fill_type="solid")
+YELLOW_FILL = PatternFill(start_color="FFF9E6", end_color="FFF9E6", fill_type="solid")
 HEADER_FONT = Font(color="FFFFFF", bold=True, size=9)
 DATA_FONT = Font(size=10)
+DATA_ROW_HEIGHT = 15
+
+THIN_BORDER = Border(
+    left=Side(style="thin", color="808080"),
+    right=Side(style="thin", color="808080"),
+    top=Side(style="thin", color="808080"),
+    bottom=Side(style="thin", color="808080"),
+)
 
 
 def get_week_tab_name():
@@ -112,7 +119,7 @@ def get_c2c_folder():
 
 def get_all_rows(c2c_folder, week_key):
     """Read all person JSONs and collect rows for the current week."""
-    all_rows = []  # (person_name, row_dict)
+    all_rows = []
     json_files = list(c2c_folder.glob("*.json"))
 
     for json_path in json_files:
@@ -121,14 +128,12 @@ def get_all_rows(c2c_folder, week_key):
                 data = json.load(f)
             person = data.get("person", json_path.stem)
             weeks = data.get("weeks", {})
-
             if week_key in weeks:
                 for row in weeks[week_key]:
                     all_rows.append((person, row))
         except (json.JSONDecodeError, OSError):
             continue
 
-    # Sort by person name (alphabetical)
     all_rows.sort(key=lambda x: x[0].lower())
     return all_rows
 
@@ -137,19 +142,17 @@ def get_last_request_no(weeks_folder):
     """Find the max requestNo from the most recent xlsx in weeks/."""
     if not weeks_folder.exists():
         return None
-
     xlsx_files = sorted(
         weeks_folder.glob("*.xlsx"), key=lambda f: f.stat().st_mtime, reverse=True
     )
     if not xlsx_files:
         return None
-
     try:
         wb = load_workbook(xlsx_files[0], read_only=True)
         ws = wb.active
         max_req = None
         for row in ws.iter_rows(min_row=2, max_col=3, values_only=True):
-            req = row[2]  # Column C = Request No
+            req = row[2]
             if req and str(req).strip():
                 max_req = str(req).strip()
         wb.close()
@@ -170,7 +173,6 @@ def increment_request_no(request_no):
 
 def build_xlsx(all_rows, weeks_folder, week_key, first_request_no=None):
     """Build the xlsx file with template formatting."""
-    # Determine starting requestNo
     if first_request_no:
         current_req = first_request_no
     else:
@@ -179,19 +181,11 @@ def build_xlsx(all_rows, weeks_folder, week_key, first_request_no=None):
             return None, "need_request_no"
         current_req = increment_request_no(last_req)
 
-    # Create workbook
     wb = Workbook()
     ws = wb.active
     ws.title = week_key
 
-    thin_border = Border(
-        left=Side(style="thin", color="808080"),
-        right=Side(style="thin", color="808080"),
-        top=Side(style="thin", color="808080"),
-        bottom=Side(style="thin", color="808080"),
-    )
-
-    # Write headers
+    # ─── Headers ───
     for col_idx, (header, _, width, bg_color) in enumerate(COLUMNS):
         cell = ws.cell(row=1, column=col_idx + 1, value=header)
         cell.fill = PatternFill(
@@ -201,54 +195,50 @@ def build_xlsx(all_rows, weeks_folder, week_key, first_request_no=None):
         cell.alignment = Alignment(
             horizontal="center", vertical="center", wrap_text=True
         )
-        cell.border = thin_border
+        cell.border = THIN_BORDER
         ws.column_dimensions[get_column_letter(col_idx + 1)].width = width
 
-    # Freeze header row
     ws.freeze_panes = "A2"
 
-    # Write data rows
+    # ─── Data rows ───
     current_person = None
-    person_idx = 0
 
     for row_idx, (person, row_data) in enumerate(all_rows):
         excel_row = row_idx + 2
 
-        # Track person changes for alternating colors
-        if person != current_person:
+        # Detect first row of new person
+        is_first_of_person = person != current_person
+        if is_first_of_person:
             current_person = person
-            person_idx += 1
-
-        row_fill = PERSON_FILL_A if person_idx % 2 == 1 else PERSON_FILL_B
 
         # Assign requestNo
         row_data["requestNo"] = current_req
         current_req = increment_request_no(current_req)
 
-        # Write each column
+        # Fixed row height (clip text)
+        ws.row_dimensions[excel_row].height = DATA_ROW_HEIGHT
+
+        # Write each cell
         for col_idx, (_, json_key, _, _) in enumerate(COLUMNS):
             value = row_data.get(json_key, "")
             cell = ws.cell(
                 row=excel_row, column=col_idx + 1, value=value if value else None
             )
-            cell.border = thin_border
+            cell.border = THIN_BORDER
             cell.font = DATA_FONT
-            cell.alignment = Alignment(
-                horizontal="center", vertical="center", wrap_text=True
-            )
+            cell.alignment = Alignment(horizontal="center", vertical="center")
 
-            # Gray if empty, otherwise person alternating color
+            # Fill: gray if empty, yellow if first row of person (and has value), else no fill
             if not value:
                 cell.fill = GRAY_FILL
-            else:
-                cell.fill = row_fill
+            elif is_first_of_person:
+                cell.fill = YELLOW_FILL
+            # else: no fill (white default)
 
-    # Enable header filter dropdowns across the full data range
-    ws.auto_filter.ref = (
-        f"A1:{get_column_letter(len(COLUMNS))}{len(all_rows) + 1}"
-    )
+    # ─── Auto-filter ───
+    ws.auto_filter.ref = f"A1:{get_column_letter(len(COLUMNS))}{len(all_rows) + 1}"
 
-    # Save
+    # ─── Save ───
     weeks_folder.mkdir(exist_ok=True)
     output_path = weeks_folder / f"{week_key}.xlsx"
     wb.save(str(output_path))
@@ -266,7 +256,6 @@ def main():
 
     week_key = get_week_tab_name()
 
-    # Get C2C folder
     c2c_folder = get_c2c_folder()
     if not c2c_folder:
         print(
@@ -274,7 +263,6 @@ def main():
         )
         sys.exit(1)
 
-    # Get all rows for this week
     all_rows = get_all_rows(c2c_folder, week_key)
     if not all_rows:
         print(
@@ -284,7 +272,6 @@ def main():
         )
         sys.exit(1)
 
-    # Build xlsx
     weeks_folder = c2c_folder / "Weekly Reports"
     output_path, status = build_xlsx(
         all_rows, weeks_folder, week_key, args.first_request_no
@@ -301,9 +288,7 @@ def main():
         )
         sys.exit(1)
 
-    # Count unique persons
     persons = set(person for person, _ in all_rows)
-
     print(
         json.dumps(
             {
