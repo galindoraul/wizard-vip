@@ -1,0 +1,24 @@
+name: Update manifest
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.claude/**'
+
+jobs:
+  update-manifest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Generate manifest
+        run: find .claude -type f | sort > manifest.txt
+
+      - name: Commit manifest
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add manifest.txt
+          git diff --cached --quiet || git commit -m "chore: auto-update manifest.txt"
+          git push

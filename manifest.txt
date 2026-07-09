@@ -1,0 +1,6 @@
+.claude/.DS_Store
+.claude/skills/click2sync-status-checker/SKILL.md
+.claude/skills/click2sync-status-checker/scripts/notify.py
+.claude/skills/click2sync-status-checker/scripts/read-submissions.py
+.claude/skills/click2sync-weekly-report/SKILL.md
+.claude/skills/click2sync-weekly-report/scripts/build-report.py
