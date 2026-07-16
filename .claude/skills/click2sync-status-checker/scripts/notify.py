@@ -56,6 +56,7 @@ def get_space_members():
             "google.chat.member",
             "list",
             f"--space-name={SPACE_NAME}",
+            "--limit=200",
             "-o",
             "json",
         ],

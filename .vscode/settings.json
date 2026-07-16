@@ -2,7 +2,7 @@
   "files.exclude": {
     ".claude/skills/click2sync-status-checker": false,
     ".claude/skills/click2sync-weekly-report": false,
-    "install.sh": false,
+    "install.sh": true,
   },
 
   "search.exclude": {
