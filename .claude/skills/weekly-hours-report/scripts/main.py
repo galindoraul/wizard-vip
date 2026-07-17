@@ -61,7 +61,7 @@ def main():
     ap.add_argument("--year", type=int, help="Year, default current")
     ap.add_argument("--sheet-id", default=DEFAULT_SHEET_ID, help="Google Sheet ID (collaborators + PTO)")
     ap.add_argument("--sheet-xlsx", help="Use an already-fetched local Sheet xlsx instead of downloading")
-    ap.add_argument("--rates", help="Path to rates.json (default: scripts/rates.json)")
+    ap.add_argument("--rates", help="Path to rates.json (default: <skill root>/rates.json)")
     ap.add_argument("--check-rates", action="store_true", help="Only validate rates.json (no month needed) and exit")
     ap.add_argument("--no-cache", action="store_true", help="Force a fresh download even if a valid cache exists")
     ap.add_argument("--output", help="Output Excel path (default: Shared drive 'Weekly Hours Report' folder)")

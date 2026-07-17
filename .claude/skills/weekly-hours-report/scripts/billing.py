@@ -14,7 +14,8 @@ from openpyxl.utils import get_column_letter
 
 from core import normalize_value, get_month_number, get_month_name
 
-RATES_PATH_DEFAULT = Path(__file__).parent / "rates.json"
+# rates.json lives in the skill root (one level above scripts/), not next to the code.
+RATES_PATH_DEFAULT = Path(__file__).parent.parent / "rates.json"
 DISCOUNT_RATE = 0.02  # 2% volume discount
 
 
