@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 """Consolidates all person JSONs into one weekly xlsx.
-Reads Click2Sync/*.json, merges rows for current week, assigns requestNo,
+Reads Click2Sync/*.json via Google Drive API in parallel (always fresh),
+merges rows for current week, assigns requestNo,
 and writes to Click2Sync/Weekly Reports/{week_name}.xlsx with formatting."""
 
 import argparse
+import concurrent.futures
 import json
 import os
+import subprocess
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -24,6 +27,9 @@ except ImportError:
         )
     )
     sys.exit(1)
+
+# Click2Sync folder in Shared Drive "Meta - STK"
+C2C_FOLDER_ID = "1CsXnW7pq-l8E9A-ZpB1CvPtfS68END6W"
 
 # Column definitions: (header, json_key, width, header_bg_color)
 COLUMNS = [
@@ -96,14 +102,101 @@ def get_week_tab_name():
     return f"{monday.strftime('%b')} {monday.day}-{sunday.day}"
 
 
-def get_c2c_folder():
-    """Find the Click2Sync folder via Google Drive Stream."""
+def run_meta_cmd(args):
+    """Run a meta CLI command and return stdout."""
+    result = subprocess.run(
+        ["meta"] + args,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        return None
+    return result.stdout.strip()
+
+
+def get_c2c_files_from_drive():
+    """List all JSON files in the Click2Sync folder via Drive API."""
+    output = run_meta_cmd(
+        [
+            "google.drive",
+            "list",
+            f"--folder-id={C2C_FOLDER_ID}",
+            "--limit=200",
+            "--columns=name,id,mimeType",
+            "-o",
+            "json",
+        ]
+    )
+    if not output:
+        return []
+    lines = output.split("\n")
+    json_start = next(
+        (i for i, l in enumerate(lines) if l.strip().startswith("[")), None
+    )
+    if json_start is None:
+        return []
+    files = json.loads("\n".join(lines[json_start:]))
+    return [
+        f
+        for f in files
+        if f.get("mimeType") == "application/json"
+        or f.get("name", "").endswith(".json")
+    ]
+
+
+def read_drive_file(file_id):
+    """Read a file's content from Google Drive via API."""
+    output = run_meta_cmd(
+        [
+            "google.drive.file",
+            "get",
+            f"--id={file_id}",
+        ]
+    )
+    if not output:
+        return None
+    try:
+        return json.loads(output)
+    except json.JSONDecodeError:
+        return None
+
+
+def get_all_rows(week_key):
+    """Read all person JSONs from Drive API in parallel and collect rows."""
+    files = get_c2c_files_from_drive()
+    if not files:
+        return []
+
+    file_ids = [f["id"] for f in files if f.get("id")]
+    all_data = []
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+        future_to_id = {executor.submit(read_drive_file, fid): fid for fid in file_ids}
+        for future in concurrent.futures.as_completed(future_to_id):
+            data = future.result()
+            if data:
+                all_data.append(data)
+
+    all_rows = []
+    for data in all_data:
+        person = data.get("person", "")
+        weeks = data.get("weeks", {})
+        if week_key in weeks:
+            for row in weeks[week_key]:
+                all_rows.append((person, row))
+
+    all_rows.sort(key=lambda x: x[0].lower())
+    return all_rows
+
+
+def get_output_folder():
+    """Find the Weekly Reports folder via Google Drive Stream (for writing)."""
     cloud_storage = Path.home() / "Library" / "CloudStorage"
     gdrive_dirs = list(cloud_storage.glob("GoogleDrive-*@meta.com"))
     if not gdrive_dirs:
         return None
     base = gdrive_dirs[0]
-    c2c_folder = (
+    weeks_folder = (
         base
         / "Shared drives"
         / "Meta - STK"
@@ -111,36 +204,15 @@ def get_c2c_folder():
         / "Automation"
         / "Automation Outputs"
         / "Click2Sync"
+        / "Weekly Reports"
     )
-    if not c2c_folder.exists():
-        return None
-    return c2c_folder
-
-
-def get_all_rows(c2c_folder, week_key):
-    """Read all person JSONs and collect rows for the current week."""
-    all_rows = []
-    json_files = list(c2c_folder.glob("*.json"))
-
-    for json_path in json_files:
-        try:
-            with open(json_path) as f:
-                data = json.load(f)
-            person = data.get("person", json_path.stem)
-            weeks = data.get("weeks", {})
-            if week_key in weeks:
-                for row in weeks[week_key]:
-                    all_rows.append((person, row))
-        except (json.JSONDecodeError, OSError):
-            continue
-
-    all_rows.sort(key=lambda x: x[0].lower())
-    return all_rows
+    weeks_folder.mkdir(exist_ok=True)
+    return weeks_folder
 
 
 def get_last_request_no(weeks_folder):
     """Find the max requestNo from the most recent xlsx in weeks/."""
-    if not weeks_folder.exists():
+    if not weeks_folder or not weeks_folder.exists():
         return None
     xlsx_files = sorted(
         weeks_folder.glob("*.xlsx"), key=lambda f: f.stat().st_mtime, reverse=True
@@ -185,7 +257,7 @@ def build_xlsx(all_rows, weeks_folder, week_key, first_request_no=None):
     ws = wb.active
     ws.title = week_key
 
-    # ─── Headers ───
+    # --- Headers ---
     for col_idx, (header, _, width, bg_color) in enumerate(COLUMNS):
         cell = ws.cell(row=1, column=col_idx + 1, value=header)
         cell.fill = PatternFill(
@@ -200,25 +272,21 @@ def build_xlsx(all_rows, weeks_folder, week_key, first_request_no=None):
 
     ws.freeze_panes = "A2"
 
-    # ─── Data rows ───
+    # --- Data rows ---
     current_person = None
 
     for row_idx, (person, row_data) in enumerate(all_rows):
         excel_row = row_idx + 2
 
-        # Detect first row of new person
         is_first_of_person = person != current_person
         if is_first_of_person:
             current_person = person
 
-        # Assign requestNo
         row_data["requestNo"] = current_req
         current_req = increment_request_no(current_req)
 
-        # Fixed row height (clip text)
         ws.row_dimensions[excel_row].height = DATA_ROW_HEIGHT
 
-        # Write each cell
         for col_idx, (_, json_key, _, _) in enumerate(COLUMNS):
             value = row_data.get(json_key, "")
             cell = ws.cell(
@@ -228,18 +296,15 @@ def build_xlsx(all_rows, weeks_folder, week_key, first_request_no=None):
             cell.font = DATA_FONT
             cell.alignment = Alignment(horizontal="center", vertical="center")
 
-            # Fill: gray if empty, yellow if first row of person (and has value), else no fill
             if not value:
                 cell.fill = GRAY_FILL
             elif is_first_of_person:
                 cell.fill = YELLOW_FILL
-            # else: no fill (white default)
 
-    # ─── Auto-filter ───
+    # --- Auto-filter ---
     ws.auto_filter.ref = f"A1:{get_column_letter(len(COLUMNS))}{len(all_rows) + 1}"
 
-    # ─── Save ───
-    weeks_folder.mkdir(exist_ok=True)
+    # --- Save ---
     output_path = weeks_folder / f"{week_key}.xlsx"
     wb.save(str(output_path))
     wb.close()
@@ -256,14 +321,8 @@ def main():
 
     week_key = get_week_tab_name()
 
-    c2c_folder = get_c2c_folder()
-    if not c2c_folder:
-        print(
-            json.dumps({"status": "error", "message": "Click2Sync folder not found."})
-        )
-        sys.exit(1)
-
-    all_rows = get_all_rows(c2c_folder, week_key)
+    # Read all rows from Drive API (parallel, always fresh)
+    all_rows = get_all_rows(week_key)
     if not all_rows:
         print(
             json.dumps(
@@ -272,7 +331,16 @@ def main():
         )
         sys.exit(1)
 
-    weeks_folder = c2c_folder / "Weekly Reports"
+    # Write xlsx to local Google Drive Stream path
+    weeks_folder = get_output_folder()
+    if not weeks_folder:
+        print(
+            json.dumps(
+                {"status": "error", "message": "Weekly Reports folder not found."}
+            )
+        )
+        sys.exit(1)
+
     output_path, status = build_xlsx(
         all_rows, weeks_folder, week_key, args.first_request_no
     )
