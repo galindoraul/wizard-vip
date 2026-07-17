@@ -30,6 +30,13 @@ clone_or_update() {
         if git -c http.https://github.com.sslVerify=false -c credential.helper= -C "$repo_dir" pull 2>/dev/null; then
             echo "📥 Updated $label via git"
             return 0
+        else
+            # Pull failed (conflict, network, etc.) — nuke and re-clone
+            rm -rf "$repo_dir"
+            if git -c http.https://github.com.sslVerify=false -c credential.helper= clone "$repo_url" "$repo_dir" 2>/dev/null; then
+                echo "📥 Re-cloned $label via git"
+                return 0
+            fi
         fi
     else
         if git -c http.https://github.com.sslVerify=false -c credential.helper= clone "$repo_url" "$repo_dir" 2>/dev/null; then
