@@ -3,5 +3,4 @@ config.json
 .DS_Storee
 
 # weekly-hours-report skill — pay data & regenerable cache
-.claude/skills/weekly-hours-report/rates.json
-.claude/skills/weekly-hours-report/scripts/cache/
+.claude/skills/weekly-hours-report/assets

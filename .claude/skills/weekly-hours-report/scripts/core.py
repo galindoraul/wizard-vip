@@ -2,7 +2,7 @@
 
 Single module holding everything the report needs, imported by main.py:
   - date/month helpers
-  - fetch_sheet(): download the Google Sheet tabs into a local .xlsx (cached, parallel)
+  - fetch_sheet(): download the Google Sheet tabs into a local .xlsx (fresh, parallel)
   - read_pto() / read_team(): parse the local .xlsx
   - build_report(): combine PTO + team into Q1/Q2/Q3 structures
   - export_excel(): write the formatted, color-coded workbook
@@ -11,10 +11,9 @@ Everything (collaborators AND monthly PTO) comes from a single Google Sheet
 ("PTO Tracker Softtek"). Data is pulled via `meta google.sheets read`.
 """
 import json
-import os
 import re
 import subprocess
-import time
+import tempfile
 import unicodedata
 from calendar import monthrange
 from collections import defaultdict
@@ -85,18 +84,14 @@ def group_consecutive(days):
 # ===========================================================================
 # Fetch — download the Sheet tabs into a local .xlsx
 #
-# Performance:
-# - The team tab and month tab(s) are read **concurrently** (each `meta` call
-#   is ~2.6s of network); Sep/Sept candidates are probed in the same pool.
-# - A local **cache** avoids re-downloading: within CACHE_FRESH_SECONDS the
-#   cached file is reused with no network; after that we compare the Sheet's
-#   modifiedTime and only re-download if it actually changed.
+# Always downloads fresh into a temp file (no on-disk cache). The team tab and
+# month tab(s) are read **concurrently** (each `meta` call is ~2.6s of network);
+# Sep/Sept candidates are probed in the same pool.
 # ===========================================================================
 DEFAULT_SHEET_ID = "1Vae2OUAdYT3pMAQLLSYcNRBFklJ2WybctNia6OjNK_g"
 TEAM_TAB = "Team allocation 2026"
 TEAM_RANGE = "A1:G200"
 MONTH_RANGE = "A1:AC200"
-CACHE_FRESH_SECONDS = 120  # within this window: reuse cache with zero network
 
 def _month_tab_candidates(month, year):
     """Possible monthly tab titles, e.g. 'Jul 2026' (Sep also tries 'Sept 2026')."""
@@ -127,24 +122,6 @@ def _try_read_tab(sheet_id, tab, cell_range):
     except RuntimeError:
         return None
 
-def _sheet_modified_time(sheet_id):
-    """Return the Sheet's modifiedTime (ISO string) or None.
-
-    Uses `google.sheets describe` (~3s) rather than `google.drive.file describe`,
-    which is ~20s for this file.
-    """
-    res = subprocess.run(
-        ["meta", "google.sheets", "describe", "--id", sheet_id, "-o", "json"],
-        capture_output=True, text=True)
-    out = (res.stdout or "").strip()
-    start = out.find("{")
-    if start == -1:
-        return None
-    try:
-        return json.loads(out[start:]).get("modifiedTime")
-    except Exception:
-        return None
-
 def _write_tab(wb, title, rows):
     ws = wb.create_sheet(title)
     for r, row in enumerate(rows, start=1):
@@ -153,46 +130,20 @@ def _write_tab(wb, title, rows):
                 ws.cell(r, c, val)
     return ws
 
-def _load_cache_meta(meta_path):
-    try:
-        return json.loads(meta_path.read_text())
-    except Exception:
-        return {}
-
-def fetch_sheet(month, year, sheet_id=None, dest=None, force=False):
+def fetch_sheet(month, year, sheet_id=None, dest=None):
     """Download the team + monthly PTO tabs into a local .xlsx and return its path.
 
-    Uses the local cache when possible (see section docstring). Pass force=True to
-    always re-download.
+    Always downloads fresh (no on-disk cache); writes to a temp file that is
+    overwritten each run.
     """
     sheet_id = sheet_id or DEFAULT_SHEET_ID
-    dest = Path(dest) if dest else Path(__file__).parent / "cache" / f"sheet-{month}-{year}.xlsx"
-    meta_path = dest.with_suffix(".meta.json")
+    dest = Path(dest) if dest else Path(tempfile.gettempdir()) / f"weekly-hours-sheet-{month}-{year}.xlsx"
     candidates = _month_tab_candidates(month, year)
 
-    # --- cache reuse ---
-    current_mod = None
-    if not force and dest.exists():
-        age = time.time() - dest.stat().st_mtime
-        if age < CACHE_FRESH_SECONDS:
-            print(f"  Cache hit (<{CACHE_FRESH_SECONDS // 60} min old) — reusing {dest.name}, no download")
-            return dest
-        # older than the window: reuse only if the Sheet hasn't changed in Drive
-        cached_mod = _load_cache_meta(meta_path).get("sheet_modified")
-        current_mod = _sheet_modified_time(sheet_id)
-        if cached_mod and current_mod and cached_mod == current_mod:
-            os.utime(dest, None)  # restart the freshness window
-            print(f"  Sheet unchanged since last fetch — reusing {dest.name}")
-            return dest
-        print("  Sheet changed (or freshness check failed) — re-downloading...")
-
-    # --- download: team tab + month-tab candidates run concurrently; the
-    # modifiedTime describe is folded into the same pool so it costs no extra
-    # wall-clock (skipped if we already fetched it during the freshness check) ---
-    with ThreadPoolExecutor(max_workers=len(candidates) + 2) as ex:
+    # team tab + month-tab candidates run concurrently (each meta call is ~2.6s of network)
+    with ThreadPoolExecutor(max_workers=len(candidates) + 1) as ex:
         f_team = ex.submit(_read_tab, sheet_id, TEAM_TAB, TEAM_RANGE)
         f_month = {c: ex.submit(_try_read_tab, sheet_id, c, MONTH_RANGE) for c in candidates}
-        f_mod = ex.submit(_sheet_modified_time, sheet_id) if current_mod is None else None
         team_rows = f_team.result()
         month_title = month_rows = None
         for cand in candidates:
@@ -200,8 +151,6 @@ def fetch_sheet(month, year, sheet_id=None, dest=None, force=False):
             if rows:
                 month_title, month_rows = cand, rows
                 break
-        if f_mod is not None:
-            current_mod = f_mod.result()
 
     if month_rows is None:
         raise RuntimeError(f"No monthly tab found for {month} {year} (tried {candidates}).")
@@ -212,9 +161,6 @@ def fetch_sheet(month, year, sheet_id=None, dest=None, force=False):
     _write_tab(wb, month_title, month_rows)
     dest.parent.mkdir(parents=True, exist_ok=True)
     wb.save(dest)
-
-    if current_mod:
-        meta_path.write_text(json.dumps({"sheet_modified": current_mod, "fetched_at": time.time()}))
     return dest
 
 
@@ -324,6 +270,11 @@ def fetch_team_roster(sheet_id=None):
 # Build report — combine PTO + team into Q1/Q2/Q3 structures
 # ===========================================================================
 ABSENCE_TYPES = {"pto","pto(pa)","ml","ml(pa)"}
+# "O" (gray) = collaborator is OUTSIDE the project those days. It's not a PTO/ML
+# absence, but it IS coverable: a backup credited on the covered person's "O" days
+# (billed at that person's rate), just like a real PTO/ML day.
+OUT_TYPES = {"o"}
+COVERABLE_TYPES = ABSENCE_TYPES | OUT_TYPES
 
 def parse_backups(text):
     if not text.strip():
@@ -434,24 +385,24 @@ def build_report(pto_data, team_data, month, year):
             w=weekly.get(wn)
             if w: w["totalWorkedHours"]-=8; bench_hrs+=8
         backup_ranges=parse_backups(data["backupsText"])
-        absence_days_set={a["dayNumber"] for a in data["absences"] if normalize_value(a["type"]) in ABSENCE_TYPES}
-        # A backup covers real absence days only. Ranges may span weekends/holidays
-        # (e.g. "2-6" over a holiday on the 3rd) — those days aren't worked, so warn
-        # on any unexpected weekday but never credit or crash on them.
+        absence_days_set={a["dayNumber"] for a in data["absences"] if normalize_value(a["type"]) in COVERABLE_TYPES}
+        # A backup covers the person's coverable days only (PTO/ML or "O" out-of-project).
+        # Ranges may span weekends/holidays (e.g. "2-6" over a holiday on the 3rd) — those
+        # days aren't worked, so warn on any unexpected weekday but never credit or crash on them.
         for br in backup_ranges:
             for day in range(br["startDay"], br["endDay"]+1):
                 try: d=date(year,month_num,day)
                 except: continue
                 if d.weekday()>=5 or day in holiday_days: continue
                 if day not in absence_days_set:
-                    print(f"WARN {emp['short_name']}: backup {br['originalBackupName']} on day {day} without PTO/ML, skipping that day")
+                    print(f"WARN {emp['short_name']}: backup {br['originalBackupName']} on day {day} without PTO/ML/O, skipping that day")
         bc={}
         for br in backup_ranges:
             be=master.get(br["backupName"])
             if not be:
                 print(f"WARN backup {br['originalBackupName']} not found, skipping"); continue
             for day in range(br["startDay"], br["endDay"]+1):
-                if day not in absence_days_set: continue  # only cover real PTO/ML days (excludes weekends & holidays)
+                if day not in absence_days_set: continue  # only cover PTO/ML/O days (excludes weekends & holidays)
                 try: d=date(year,month_num,day)
                 except: continue
                 if d.weekday()>=5: continue
@@ -482,6 +433,8 @@ def build_report(pto_data, team_data, month, year):
                     days.append({"dayNumber":dn,"dayName":get_day_name(d),"status":"H","hours":0})
                 elif nt in ABSENCE_TYPES:
                     days.append({"dayNumber":dn,"dayName":get_day_name(d),"status":raw,"hours":0})
+                elif nt in OUT_TYPES:
+                    days.append({"dayNumber":dn,"dayName":get_day_name(d),"status":"O","hours":0})
                 else:
                     days.append({"dayNumber":dn,"dayName":get_day_name(d),"status":"","hours":0})
             meta=next((x for x in ctx["weeks"] if x["weekNumber"]==w["weekNumber"]),None)
@@ -534,15 +487,22 @@ def build_report(pto_data, team_data, month, year):
 # ===========================================================================
 # Export — formatted, color-coded Excel workbook
 # ===========================================================================
+# Header/section fills use the original color-by-group scheme (identity=navy,
+# weeks=gold, Abs+Work=green, Comments+Tag=purple). The dark DIVIDER lines that
+# frame the column groups are kept on top of the colors.
 NAVY="2C3E7B"; GOLD="7B5E1A"; GREEN="1B7A3D"; PURPLE="5B2D8B"; AMBER="F59E0B"
-BACKUP_CREAM="FEF3C7"; TOTALS_GREEN="B6D7A8"; EMERGENCY_RED="FECACA"; WHITE="FFFFFF"; BORDER_GRAY="444444"
+BACKUP_CREAM="FEF3C7"; TOTALS_GREEN="B6D7A8"; EMERGENCY_RED="FECACA"
+WHITE="FFFFFF"; HEADER_TEXT="FFFFFF"
+GRID_GRAY="D9D9D9"      # light internal gridlines
+DIVIDER_BLACK="000000"  # dark lines that separate the column groups
 
 def fill(argb): return PatternFill(start_color=argb, end_color=argb, fill_type="solid")
-def thin(): return Side(style="thin", color=BORDER_GRAY)
+def thin(): return Side(style="thin", color=GRID_GRAY)
+def divider(): return Side(style="medium", color=DIVIDER_BLACK)
 
 def section_color(col, week_count, weeks_detail_cols):
     if col<=5: return NAVY
-    gold_end=5+week_count+weeks_detail_cols
+    gold_end=5+weeks_detail_cols   # weeks area = Mon-Fri days + weekly Hrs (no per-week label col)
     if col<=gold_end: return GOLD
     if col<=gold_end+2: return GREEN
     return PURPLE
@@ -559,57 +519,80 @@ def write_weekly_sheet(wb, data, title="Weekly Hours"):
         print("No weekly data"); return None
     week_count=len(first["weekHours"])
     weeks_detail = first.get("weekDetails",[])
+    # Each week block = Mon-Fri day columns + one weekly Hrs (sum) column.
     weeks_detail_cols = sum(len(w["days"])+1 for w in weeks_detail)
-    total_cols = 5 + week_count + weeks_detail_cols + 4
-    abs_col = 6 + week_count + weeks_detail_cols
+    total_cols = 5 + weeks_detail_cols + 4
+    abs_col = 6 + weeks_detail_cols
     comments_col = abs_col + 2
 
     ws=wb.create_sheet(title)
     widths=[25,10,10,15,15]
     for w in weeks_detail:
-        widths.append(12)
         for _ in w["days"]: widths.append(8)
-        widths.append(8)
+        widths.append(8)   # weekly Hrs (sum) column
     widths.extend([10,10,40,35])
     for i,w in enumerate(widths,1): ws.column_dimensions[get_column_letter(i)].width=w
 
-    header_font=Font(bold=True,color=WHITE,size=10)
+    header_font=Font(bold=True,color=HEADER_TEXT,size=10)
     center=Alignment(horizontal="center",vertical="center")
     wrap=Alignment(horizontal="center",vertical="center",wrap_text=True)
-    border=Border(left=thin(),right=thin(),top=thin(),bottom=thin())
+
+    # Dark divider lines sit on the RIGHT edge of these columns, framing the groups:
+    # identity (1-5) | each Week block | Abs+Work | Comments | Tag.
+    divider_cols={5}
+    c=6
+    for w in weeks_detail:
+        c+=len(w["days"])+1
+        divider_cols.add(c-1)        # right edge of this week block (last one == weeks|Abs)
+    divider_cols.add(abs_col+1)      # after Work Hrs (Abs+Work | Comments)
+    divider_cols.add(comments_col)   # after Comments (Comments | Tag)
+    divider_cols.add(total_cols)     # outer right edge
+
+    def make_border(col, top_dark=False, bottom_dark=False):
+        return Border(
+            left=divider() if (col==1 or (col-1) in divider_cols) else thin(),
+            right=divider() if col in divider_cols else thin(),
+            top=divider() if top_dark else thin(),
+            bottom=divider() if bottom_dark else thin())
 
     for c in range(1,total_cols+1):
         cell=ws.cell(1,c); sc=section_color(c,week_count,weeks_detail_cols)
-        cell.fill=fill(sc); cell.font=header_font; cell.alignment=center; cell.border=border
+        cell.fill=fill(sc); cell.font=header_font; cell.alignment=center; cell.border=make_border(c, top_dark=True)
+    # "Week N" spans the full width of its week block (days + weekly Hrs).
     col_idx=6
     for i,w in enumerate(weeks_detail):
+        block_len=len(w["days"])+1
         ws.cell(1,col_idx).value=f"Week {i+1}"
-        col_idx+=1+len(w["days"])+1
+        ws.merge_cells(start_row=1,start_column=col_idx,end_row=1,end_column=col_idx+block_len-1)
+        col_idx+=block_len
 
     headers=["Employee","Role","Wave","Product","Pilar"]
     for w in weeks_detail:
-        headers.append(w["label"])
         for d in w["days"]:
             headers.append(f"{d['dayName']} {d['dayNumber']}")
         headers.append("Hrs")
     headers.extend(["Abs Hrs","Work Hrs","Comments","Tag"])
     for i,h in enumerate(headers,1):
         cell=ws.cell(2,i,h); sc=section_color(i,week_count,weeks_detail_cols)
-        cell.fill=fill(sc); cell.font=header_font; cell.alignment=center; cell.border=border
+        cell.fill=fill(sc); cell.font=header_font; cell.alignment=center; cell.border=make_border(i, bottom_dark=True)
 
+    work_refs={}  # id(emp) -> "'Weekly Hours'!<col><row>" of its Work Hrs cell (for live Invoice references)
+    tag_refs={}   # id(emp) -> "'Weekly Hours'!<col><row>" of its Tag cell (for the Invoice DESCRIPTION formula)
+    work_col_letter=get_column_letter(abs_col+1)
+    tag_col_letter=get_column_letter(comments_col+1)
     row_idx=3
     for emp in employees:
         if emp.get("isSeparator"):
             ws.cell(row_idx,1,emp["fullName"])
             for c in range(1,total_cols+1):
-                cell=ws.cell(row_idx,c); cell.fill=fill(AMBER); cell.font=Font(bold=True,color=WHITE); cell.alignment=wrap; cell.border=border
+                cell=ws.cell(row_idx,c); cell.fill=fill(AMBER); cell.font=Font(bold=True,color=WHITE); cell.alignment=wrap; cell.border=make_border(c)
             row_idx+=1; continue
         is_backup=emp.get("isBackup",False)
         is_emergency=not is_backup and emp.get("absHrs",0)!=-1 and emp["absHrs"]>80
         ws.cell(row_idx,1,emp["fullName"]); ws.cell(row_idx,2,emp["role"]); ws.cell(row_idx,3,emp["wave"]); ws.cell(row_idx,4,emp["product"]); ws.cell(row_idx,5,emp["pilar"])
         col=6
+        hrs_cells=[]   # the per-week Hrs cells for this row — Work Hrs sums them
         for wi,hrs in enumerate(emp["weekHours"]):
-            ws.cell(row_idx,col,hrs).alignment=center; col+=1
             wd=emp["weekDetails"][wi] if wi < len(emp["weekDetails"]) else {"days":[]}
             for d in wd["days"]:
                 cell=ws.cell(row_idx,col); cell.alignment=center
@@ -622,15 +605,22 @@ def write_weekly_sheet(wb, data, title="Weekly Hours"):
                 elif st in ("PTO(PA)","ML","ML(PA)"): cell.fill=fill("FACC15"); cell.font=Font(color="000000")
                 elif st=="H": cell.fill=fill("F3E8FF"); cell.font=Font(color="A855F7")
                 elif st=="Bench": cell.fill=fill("E5E7EB"); cell.font=Font(color="6B7280")
+                elif st=="O": cell.fill=fill("D1D5DB"); cell.font=Font(color="4B5563")  # out-of-project (gray)
                 col+=1
-            ws.cell(row_idx,col,hrs).alignment=center; col+=1
+            ws.cell(row_idx,col,hrs).alignment=center   # weekly Hrs (editable) column
+            hrs_cells.append(f"{get_column_letter(col)}{row_idx}"); col+=1
         ws.cell(row_idx,abs_col, "N/A" if emp["absHrs"]==-1 else emp["absHrs"]).alignment=center
-        ws.cell(row_idx,abs_col+1, emp["workHrs"]).alignment=center
+        # Work Hrs = SUM of the weekly Hrs cells, so editing a collaborator's weekly
+        # hours flows into Work Hrs → and into the linked Invoice QTY/AMOUNT.
+        work_value=f"=SUM({','.join(hrs_cells)})" if hrs_cells else emp["workHrs"]
+        ws.cell(row_idx,abs_col+1, work_value).alignment=center
+        work_refs[id(emp)]=f"'{title}'!{work_col_letter}{row_idx}"
         ws.cell(row_idx,comments_col, emp["comments"]).alignment=wrap
         ws.cell(row_idx,comments_col+1, emp["tag"]).alignment=center
+        tag_refs[id(emp)]=f"'{title}'!{tag_col_letter}{row_idx}"
         for c in range(1,total_cols+1):
             cell=ws.cell(row_idx,c)
-            if not cell.border.left.style: cell.border=border
+            cell.border=make_border(c)
             if not cell.alignment.horizontal: cell.alignment=center
             if is_backup: cell.fill=fill(BACKUP_CREAM)
             elif is_emergency and (not cell.fill.start_color.index or cell.fill.start_color.index=='00000000'):
@@ -641,19 +631,21 @@ def write_weekly_sheet(wb, data, title="Weekly Hours"):
     data_start=3; data_end=row_idx-1
     col=6
     for wi in range(week_count):
-        letter=get_column_letter(col)
-        ws.cell(row_idx,col).value=f"=SUM({letter}{data_start}:{letter}{data_end})"
-        ws.cell(row_idx,col).font=Font(bold=True); ws.cell(row_idx,col).alignment=center
-        col+=1+len(weeks_detail[wi]["days"])+1 if wi < len(weeks_detail) else 1
+        ndays=len(weeks_detail[wi]["days"]) if wi < len(weeks_detail) else 0
+        hrs_col=col+ndays   # the weekly Hrs (sum) column at the end of this week block
+        letter=get_column_letter(hrs_col)
+        ws.cell(row_idx,hrs_col).value=f"=SUM({letter}{data_start}:{letter}{data_end})"
+        ws.cell(row_idx,hrs_col).font=Font(bold=True); ws.cell(row_idx,hrs_col).alignment=center
+        col+=ndays+1
     abs_letter=get_column_letter(abs_col); ws.cell(row_idx,abs_col).value=f"=SUM({abs_letter}{data_start}:{abs_letter}{data_end})"; ws.cell(row_idx,abs_col).font=Font(bold=True); ws.cell(row_idx,abs_col).alignment=center
     work_letter=get_column_letter(abs_col+1); ws.cell(row_idx,abs_col+1).value=f"=SUM({work_letter}{data_start}:{work_letter}{data_end})"; ws.cell(row_idx,abs_col+1).font=Font(bold=True); ws.cell(row_idx,abs_col+1).alignment=center
     total_backup=sum(e["workHrs"] for e in employees if e.get("isBackup") and e.get("workHrs",0)>0)
     ws.cell(row_idx,comments_col,f"Total Backup Hours: {total_backup}").font=Font(bold=True); ws.cell(row_idx,comments_col).alignment=center
     for c in range(1,total_cols+1):
-        cell=ws.cell(row_idx,c); cell.fill=fill(TOTALS_GREEN); cell.border=border
+        cell=ws.cell(row_idx,c); cell.fill=fill(TOTALS_GREEN); cell.border=make_border(c, top_dark=True, bottom_dark=True)
 
     ws.freeze_panes="B3"
-    return ws
+    return work_refs, tag_refs
 
 def export_excel(data, output_path: Path):
     """Standalone: write just the Weekly Hours sheet to its own workbook."""

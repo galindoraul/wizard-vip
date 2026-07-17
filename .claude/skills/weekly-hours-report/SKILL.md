@@ -11,215 +11,199 @@ description:
 
 # Weekly Hours + Monthly Billing
 
-One command produces **one `.xlsx` with two tabs** — `Weekly Hours` and
-`Invoice` — from a single Google Sheet ("PTO Tracker Softtek") that holds both the
-**collaborators** (tab "Team allocation 2026") and the **monthly PTO** (tabs like
-"Jul 2026"). `scripts/main.py` orchestrates everything; `core.py` (shared
-pipeline) and `billing.py` (invoice) are libraries.
+One command → **one `.xlsx`, two tabs** (`Weekly Hours` + `Invoice`) from a single
+Google Sheet ("PTO Tracker Softtek") holding both the **collaborators** (tab "Team
+allocation 2026") and the **monthly PTO** (tabs like "Jul 2026"). `main.py`
+orchestrates; `core.py` (pipeline) and `billing.py` (invoice) are libraries.
 
-## Workflow when the skill is invoked
+## Workflow (in order)
 
-Do these **in order**:
+1. **Verify rates** — `--check-rates` (no month). Every collaborator (~61) needs an
+   hourly rate in `assets/rates.json`. If any are missing the script rewrites the
+   template (missing → `0`) and lists them → **ask the user to fill those rates**,
+   then re-check.
+2. **Ask which month/year** — only after rates pass. Don't assume the current month;
+   confirm as `{Month} {Year}` (e.g. "Jul 2026").
+3. **Generate** — run for that month.
 
-1. **Verify rates** — run `--check-rates` (no month needed). Every one of the ~61
-   collaborators must have an hourly rate in `scripts/rates.json`. If any are
-   missing, the script writes/updates a `rates.json` template (all collaborators,
-   missing ones set to `0`) and lists who needs a rate. **Ask the user to fill in
-   those QAs' rates in `scripts/rates.json` to continue**, then re-check.
-2. **Ask which month** (and year) — only after rates are complete. Don't assume the
-   current month. Confirm as `{Month} {Year}` (e.g. "Jul 2026").
-3. **Generate** — run for that month; it creates the single two-tab Excel.
-
-Accept Spanish or English month names, mapping to the English abbreviation the
-script expects: Ene/Enero→`Jan`, Feb→`Feb`, Mar/Marzo→`Mar`, Abr/Abril→`Apr`,
-May/Mayo→`May`, Jun/Junio→`Jun`, Jul/Julio→`Jul`, Ago/Agosto→`Aug`,
-Sep/Septiembre→`Sep`, Oct/Octubre→`Oct`, Nov→`Nov`, Dic/Diciembre→`Dec`.
+Month names: accept Spanish or English, pass the **English abbreviation** to the
+script — Ene→`Jan`, Feb→`Feb`, Mar→`Mar`, Abr→`Apr`, May→`May`, Jun→`Jun`,
+Jul→`Jul`, Ago→`Aug`, Sep→`Sep`, Oct→`Oct`, Nov→`Nov`, Dic→`Dec`.
 
 ## Quick start
 
 ```bash
-# 0. openpyxl available? (one-time)
+# openpyxl available? (one-time)
 /usr/bin/python3 -c "import openpyxl" || /usr/bin/pip3 install --user openpyxl
 
-# 1. Check rates (creates/updates scripts/rates.json template if incomplete)
+# 1) check rates   2) generate once every rate is set
 /usr/bin/python3 scripts/main.py --check-rates
-
-# 2. Once every collaborator has a rate, generate for the chosen month
 /usr/bin/python3 scripts/main.py --month Jul --year 2026
 ```
 
-Output → one file `Weekly-Hours-Billing-{Month}-{Year}.xlsx` (tabs: Weekly Hours +
-Invoice) in the Shared drive (see [Output location](#output-location)).
+Output → `Weekly-Hours-Billing-{Month}-{Year}.xlsx` in the Shared drive (see
+[Output](#output)).
 
-> Use `/usr/bin/python3` — NOT the bare `python3` (that resolves to the fbcode
-> Python which lacks openpyxl; there is no `python`).
+> Use `/usr/bin/python3` — NOT bare `python3` (fbcode Python, no openpyxl).
 
-## Before running — authentication
+## Authentication
 
-Collaborators AND PTO come from a Google Sheet, so the `meta` CLI must be
-authenticated. Quick check:
+Data comes from a Google Sheet, so `meta` must be authenticated. Check:
 
 ```bash
 meta google.sheets get --id 1Vae2OUAdYT3pMAQLLSYcNRBFklJ2WybctNia6OjNK_g
 ```
 
-If it lists tabs, you're good. If it fails with OAuth / 401 / auth errors, see
-[Error: Auth expired](#error-auth-expired) below.
+Lists tabs → good. OAuth / 401 / auth error → see [Auth expired](#auth-expired).
 
-## Rates — `scripts/rates.json`
+## Rates — `assets/rates.json`
 
-The Google Sheet has **no rate column**, so billing rates live in a
-per-collaborator JSON file next to the scripts:
+The Sheet has **no rate column**, so rates live in a local JSON:
 
 ```json
-{
-  "Arath De la Cruz": 42.5,
-  "Emmanuel Barrios": 42.5,
-  "...": 0
-}
+{ "Arath De la Cruz": 42.5, "Emmanuel Barrios": 42.5, "...": 0 }
 ```
 
-- Keyed by the collaborator's **QA Analyst** short name (matched case/accent-insensitively).
-- Value = hourly rate (USD). Must be **> 0** for every collaborator.
-- A **backup** is billed at the rate of the person they cover (looked up by name).
-- `--check-rates` validates completeness and regenerates the template (preserving
-  existing values, missing → `0`) so the user only fills in numbers.
-- `DISCOUNT_RATE` (2% volume discount) is set at the top of `billing.py`.
-- `rates.json` holds pay data — keep it out of version control (gitignore it).
+- Keyed by the **QA Analyst** short name (matched case/accent-insensitively).
+- Value = hourly USD rate, must be **> 0** for everyone.
+- A **backup** is billed at the rate of the person they cover.
+- `--check-rates` validates and regenerates the template (keeps existing values,
+  missing → `0`) so the user only fills numbers.
+- `DISCOUNT_RATE` (2% volume discount) is at the top of `billing.py`.
+- `rates.json` is pay data — keep it out of version control.
 
-## How it runs (`scripts/main.py`)
+## How it runs
 
-`main.py` is the orchestrator; logic lives in `core.py` (shared) and `billing.py`.
-
-1. **Fetch** — `core.fetch_sheet()` pulls the "Team allocation 2026" tab and the
-   month's PTO tab via `meta google.sheets read` (concurrently), caching to
-   `scripts/cache/sheet-{Month}-{Year}.xlsx` — see [Caching & performance](#caching--performance).
-2. **Read** — `read_pto()` (absences/holidays/backups) and `read_team()` (roles, products).
+1. **Fetch** — `fetch_sheet()` reads the team tab + month PTO tab via
+   `meta google.sheets read` (concurrently), to a fresh temp copy (**no cache**).
+2. **Read** — `read_pto()` (absences/holidays/backups) + `read_team()` (roles/products).
 3. **Validate rates** — every collaborator must have a rate (else template + stop).
-4. **Weekly** — `build_report()` → Q1/Q2/Q3 structures with worked hours.
-5. **Billing** — `build_billing(weekly, rates)` → line items, 2% discount, total.
-6. **Export** — one `Workbook` gets `write_weekly_sheet()` + `write_invoice_sheet()`,
-   saved as a single two-tab file.
+4. **Weekly** — `build_report()` → Q1/Q2/Q3 with computed worked hours.
+5. **Billing** — `build_billing()` → line items, 2% discount, total.
+6. **Export** — the invoice **template** (`assets/Monthly Billing Report -
+   Template.xlsx`) is loaded as the workbook; `write_weekly_sheet()` adds the
+   Weekly Hours tab (returning each collaborator's Work Hrs **and Tag** cell) and
+   `write_invoice_sheet()` fills the template's Invoice tab in place (line items +
+   totals), using those maps for [live formulas](#live-links).
 
-> All **input data** (collaborators, absences, backups) comes from the single
-> Google Sheet below — no other source is read (rates are the local `rates.json`).
-> The finished workbook is then *written* to Google Drive.
+> All **input** comes from the Sheet below (rates from local `rates.json`); the
+> finished workbook is *written* to Google Drive. Every run downloads fresh.
 
 ### Flags
 
 | Flag | Purpose |
 |------|---------|
-| `--month` | Month name (Jan–Dec). Default: current month. |
-| `--year` | Year. Default: current year. |
-| `--check-rates` | Validate `rates.json` against the roster and exit (no month needed). |
-| `--rates <path>` | Use a specific rates.json (default: `scripts/rates.json`). |
-| `--sheet-id <id>` | Override the Google Sheet ID (default baked into `core.py`). |
-| `--sheet-xlsx <path>` | Reuse an already-downloaded Sheet copy instead of downloading. |
-| `--no-cache` | Force a fresh download even if a valid cache exists. |
+| `--month` / `--year` | Target month (Jan–Dec) / year. Default: current. |
+| `--check-rates` | Validate `rates.json` and exit (no month needed). |
+| `--rates <path>` | Alternate rates.json (default: `assets/rates.json`). |
+| `--sheet-id <id>` | Override the Google Sheet ID. |
+| `--sheet-xlsx <path>` | Reuse an already-downloaded Sheet copy. |
 | `--output <path>` | Override the output `.xlsx` path. |
-
-### Caching & performance
-
-~95% of a run is network time on `meta google.sheets`. To keep reruns fast,
-`fetch_sheet()` (in `core.py`):
-
-- Reads the **team tab and month tab concurrently** (one round-trip's wall-clock).
-- Caches the download at `scripts/cache/sheet-{Month}-{Year}.xlsx`:
-  - **Within 2 minutes** → reuse the cache with **zero network** (~0.2s total).
-  - **After 2 minutes** → check the Sheet's `modifiedTime` (via
-    `google.sheets describe`); reuse if unchanged, else re-download.
-- Use `--no-cache` to always re-download.
 
 ## Data source — one Google Sheet ("PTO Tracker Softtek")
 
-ID `1Vae2OUAdYT3pMAQLLSYcNRBFklJ2WybctNia6OjNK_g`
-https://docs.google.com/spreadsheets/d/1Vae2OUAdYT3pMAQLLSYcNRBFklJ2WybctNia6OjNK_g
+ID `1Vae2OUAdYT3pMAQLLSYcNRBFklJ2WybctNia6OjNK_g` — the only input truth
+(collaborators, PTO/ML, holidays, backups). Monthly tabs use **English
+abbreviations** (`Jul 2026`), never Spanish (no "Julio 2026").
 
-The only source of input truth — collaborators, absences (PTO/ML), holidays,
-backups. Monthly tabs are named in English abbreviations (`Jun 2026`, `Jul 2026`,
-`Aug 2026`), **not** Spanish (there is no "Junio 2026").
+**PTO — monthly tab** `{Month} {Year}` (Sep also matches `Sept 2026`):
+- **Row 8** = header `QA3 | Collab | <day #s…> | Backup | Notes`.
+- **Row 9+** = one row per collaborator; the **Collab** column is the match key.
+- Codes: `PTO`, `PTO(PA)`, `ML`, `ML(PA)`, `H` (holiday), `Bench`, `O` (out of
+  project — gray).
 
-### PTO — monthly tab
-- Tab name format: `{Month} {Year}` (e.g. `Jul 2026`; September also matches `Sept 2026`).
-- **Row 8** is the header: `QA3 | Collab | <day numbers…> | Backup | Notes`.
-- **Row 9+**: one row per collaborator; the name lives in the **Collab** column
-  and is the key used to match against the team tab.
-- Absence codes: `PTO`, `PTO(PA)`, `ML`, `ML(PA)`, `H` (holiday), `Bench`.
+**Collaborators — "Team allocation 2026"** (header on **row 1**):
 
-### Collaborators — tab "Team allocation 2026"
-- **Header on row 1.** Columns: `App | Feature | QA Lead | Role | QA Analyst | QA Analyst (Full Name) | New QA3`.
-- Column mapping:
+| Sheet column | Used as |
+|--------------|---------|
+| `QA Analyst` | short name — match key vs PTO **Collab** and rates key |
+| `QA Analyst (Full Name)` | full name |
+| `App` → Product · `Feature` → Pilar | |
+| `Role` | Q grouping: `QA 1`→Q1, `QA 2`→Q2, `QA 3`→Q3 |
 
-  | Sheet column | Used as |
-  |--------------|---------|
-  | `QA Analyst` | collaborator short name (match key vs PTO **Collab**, and rates key) |
-  | `QA Analyst (Full Name)` | full name |
-  | `App` | Product |
-  | `Feature` | Pilar |
-  | `Role` | QA grouping (`QA 1`→Q1, `QA 2`→Q2, `QA 3`→Q3) |
-  | `QA Lead` / `New QA3` | reference only |
-
-- **Tag** = `QA Analyst - App - Feature` (e.g. `Arath De la Cruz - Central Products - MAA`).
-- A collaborator in the PTO tab but **not** in "Team allocation 2026" is skipped
-  with a `WARN … not in team allocation` (expected).
+- **Tag** = `QA Analyst - App - Feature`.
+- In PTO but not in team allocation → skipped with a `WARN` (expected).
 
 ## Business rules
 
-- **Worked hours are computed**, not read: 8h × working days (Mon–Fri), minus
-  absences, holidays and bench days. There is no worked-hours column in the Sheet.
-- Standard day = **8 hours**; only **Mon–Fri** count as working days.
-- **Holidays** (`H`) do not count as worked hours or absences.
-- **Bench** days (`TEAM: Bench | Bench <range>` note) subtract worked hours but are not absences.
-- **Backups** (`↳` rows) cover an absent collaborator. Credited only on the covered
-  person's **actual PTO/ML days**; a backup day that is a weekend, holiday, or bench
-  day is **skipped** with a `WARN` (never fails). Billed at the covered person's rate.
-- **Emergency** highlight (red) when a collaborator's absence hours exceed 80.
-- Collaborators are grouped into Q1/Q2/Q3 by their `Role`.
+- **Worked hours are computed** (not read): 8h × working days (Mon–Fri) − absences −
+  holidays − bench. No worked-hours column exists in the Sheet.
+- Standard day = **8h**; only **Mon–Fri** count.
+- **Holidays** (`H`) count as neither worked nor absence.
+- **Bench** (`TEAM: Bench | Bench <range>` note) subtracts worked hours, not absence.
+- **Out of project** (`O`, gray) — the collaborator is off the project those days:
+  it subtracts worked hours (not absence), and — like PTO/ML — is a **coverable**
+  day, so a backup gets credited for covering it.
+- **Backups** (`↳` rows) credited only on the covered person's **coverable days**
+  (`PTO`/`ML`/`O`); a backup day that's weekend/holiday/bench is **skipped** with a
+  `WARN`. Billed at the covered person's rate.
+- **Emergency** red highlight when a collaborator's absence hours exceed 80.
 
 ### Expected warnings (not errors)
 
-- `WARN <name> not in team allocation, skipping` — in a PTO tab but not the team tab.
-- `WARN <name>: backup <person> on day <n> without PTO/ML, skipping that day` — a
-  backup range covers a non-PTO/ML day (e.g. bench); that day is ignored.
-- `WARN no rate for <name>` — should not happen after `--check-rates` passes.
+- `WARN <name> not in team allocation, skipping` — in PTO but not team tab.
+- `WARN <name>: backup <person> on day <n> without PTO/ML/O, skipping that day`.
+- `WARN no rate for <name>` — shouldn't happen after `--check-rates` passes.
 
-## Output location
+## Output
 
-One two-tab workbook saved into the team's **Shared drive** via the locally-synced
-Google Drive for Desktop mount:
+Saved into the team **Shared drive** via the synced Google Drive for Desktop mount:
 
 ```
 Shared drives/Meta - STK/Project Tracking/Automation/Automation Outputs/Weekly Hours Report/
-  └─ Weekly-Hours-Billing-{Month}-{Year}.xlsx   (tabs: Weekly Hours + Invoice)
+  └─ Weekly-Hours-Billing-{Month}-{Year}.xlsx
 ```
 
-- The `GoogleDrive-<account>` mount is **auto-detected** from whoever runs the
-  skill (`~/Library/CloudStorage/GoogleDrive-*`) — works on any team member's computer.
-- We write to the **local synced folder** and let Drive for Desktop push it up.
-  The `meta google.drive upload` API is **not** used (blocked by corpnet on laptops).
-- If the Shared drive isn't mounted, it falls back to `scripts/output/` with a `WARN`.
-- Override with `--output <path>`.
+- Mount auto-detected from `~/Library/CloudStorage/GoogleDrive-*` (any team member).
+- Written to the local synced folder — Drive pushes it up. `meta google.drive
+  upload` is **not** used (corpnet-blocked on laptops).
+- No mount → falls back to your **home folder** with a `WARN`. Override: `--output`.
 
-## Output format
+**Weekly Hours tab:** Q1/Q2/Q3 sections; columns Employee, Role, Wave, Product,
+Pilar, then **per week only the Mon–Fri day columns + a weekly Hrs (sum) column**
+(no per-week date-range/label column), then Abs Hrs, Work Hrs, Comments, Tag. The
+`Week N` header on the top row is **merged across its whole week block**. Headers
+are **color-coded by group** with white text — identity (1-5) **navy** | each Week
+block **gold** | Abs+Work **green** | Comments+Tag **purple** — and **dark divider
+lines** frame those same groups on top of the colors (light-gray gridlines
+inside). Cell colors: PTO blue, PTO(PA)/ML yellow, Holiday purple, Bench gray,
+Out-of-project (`O`) gray, Emergency red, Backup cream, Totals green.
 
-**Weekly Hours tab:**
-- Sections Q1/Q2/Q3 (dark-blue headers); columns Employee, Role, Wave, Product,
-  Pilar, per-week day breakdown + Hrs, Abs Hrs, Work Hrs, Comments, Tag.
-- Cell colors: PTO (blue), PTO(PA)/ML (yellow), Holiday (purple), Bench (gray),
-  Emergency (red), Backup rows (cream), Totals (green).
+**Invoice tab:** built by **filling the template** `assets/Monthly Billing Report -
+Template.xlsx` (bill/ship to, PO, footer and styling all come from it). Only the
+DATE (**centered** in `I8:L8`), the **Services Period** line in `C18`
+(`Services Period: {m}/1/{year} to {m}/{lastDay}/{year}`), the QA Analyst I/II/III
+line items (QTY × RATE = AMOUNT, one inserted row per collaborator under each
+section marker, then a **blank spacer row after each QA section** so they aren't
+cramped) and the totals — sub-total, 2% discount, total (+ amount in words) — are
+written in. The line-item **DESCRIPTION** (column C) is a **live link** to the
+collaborator's Tag cell in Weekly Hours (not static text). Everything written uses
+**Times New Roman** and collaborator names are **not bold**.
 
-**Invoice tab:**
-- Softtek → Meta invoice: header (bill/ship to, PO, dates), line items grouped as
-  QA Analyst I/II/III with QTY (hours) × RATE = AMOUNT, sub-total, 2% volume
-  discount, and total (with amount in words).
+### Live links
 
-## Error: Auth expired
+The Invoice uses **formulas**, so a manual edit to a collaborator's hours in
+Weekly Hours flows into the Invoice **without re-running the skill**:
 
-If any step fails with "OAuth", "401", or "auth" errors:
+- **Work Hrs** (Weekly Hours) = `SUM(weekly Hrs cells)` → editing any weekly Hrs
+  cell recalculates that collaborator's Work Hrs.
+- **QTY** (Invoice) = `='Weekly Hours'!<cell>` → that same collaborator's **Work
+  Hrs** cell, so the change lands on the matching Invoice line.
+- **DESCRIPTION** (Invoice, column C) = `='Weekly Hours'!<cell>` → that
+  collaborator's **Tag** cell, so editing the Tag in Weekly Hours updates the
+  invoice name/label too. The column letter is computed per month (it shifts with
+  the number of day columns), never hard-coded.
+- **AMOUNT** = `QTY × RATE`; **SUB-TOTAL** = `SUM(amounts)`;
+  **Discount** = `SUB-TOTAL × 2%`; **TOTAL** = `SUB-TOTAL − Discount`.
 
-1. Run `jf auth`. On x2p devservers this reports success but may not write a token —
-   if reads still fail, use the legacy flow below.
-2. Go to https://www.internalfb.com/intern/jf/authenticate/
-3. Open the **"Legacy Options"** section and copy the **UID** and **NONCE**.
-4. Run: `jf auth --skip-legacy-auth-upgrade <UID> <NONCE>`
-5. Re-run the skill.
+> Caveat: the spelled-out **amount in words** is fixed at generation time (Excel
+> can't spell a number) — re-run the skill if a hand-edited total must match.
+
+## Auth expired
+
+On "OAuth" / "401" / "auth" errors:
+
+1. `jf auth` (on x2p devservers may report success but not write a token → use legacy).
+2. https://www.internalfb.com/intern/jf/authenticate/ → **Legacy Options** → copy UID + NONCE.
+3. `jf auth --skip-legacy-auth-upgrade <UID> <NONCE>`
+4. Re-run the skill.

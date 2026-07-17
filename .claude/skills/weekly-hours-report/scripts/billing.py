@@ -6,16 +6,16 @@ core.py). Billing RATES come from a per-collaborator `rates.json` (the Google
 Sheet has no rate column).
 """
 import calendar
+import copy
 import json
+from datetime import date
 from pathlib import Path
 
-from openpyxl.styles import PatternFill, Border, Side, Font, Alignment
-from openpyxl.utils import get_column_letter
+from openpyxl.styles import Font, Alignment, Border, PatternFill
 
 from core import normalize_value, get_month_number, get_month_name
 
-# rates.json lives in the skill root (one level above scripts/), not next to the code.
-RATES_PATH_DEFAULT = Path(__file__).parent.parent / "rates.json"
+RATES_PATH_DEFAULT = Path(__file__).parent.parent / "assets" / "rates.json"
 DISCOUNT_RATE = 0.02  # 2% volume discount
 
 
@@ -89,6 +89,7 @@ def build_billing(weekly_report, rates):
                 "rate": rate, "amount": qty * rate,
                 "isBackup": emp.get("isBackup", False), "coveringFor": emp.get("coveringFor"),
                 "isSeparator": False, "roleKey": role_key,
+                "_emp": emp,  # original weekly emp — lets the invoice reference its Work Hrs cell
             })
         return rows
 
@@ -130,145 +131,204 @@ def amount_to_words(total):
 
 
 # ===========================================================================
-# Invoice worksheet
+# Invoice worksheet — fill the "Monthly Billing Report" template
+#
+# Instead of drawing the invoice from scratch, we open the pre-formatted
+# template (assets/Monthly Billing Report - Template.xlsx) and only fill the
+# dynamic parts: the DATE, the QA Analyst I/II/III line items, and the totals
+# formulas. Ported from the Google Apps Script `InvoiceDetailsWriter`: find each
+# role's section marker, insert one row per employee under it, and write the row.
 # ===========================================================================
-def fill(argb): return PatternFill(start_color=argb, end_color=argb, fill_type="solid")
-def thin(): return Side(style="thin", color="D0D0D0")
-def border_all(): return Border(left=thin(), right=thin(), top=thin(), bottom=thin())
-def blue_border(): return Border(left=Side(style="thin", color="4472C4"), right=Side(style="thin", color="4472C4"), top=Side(style="thin", color="4472C4"), bottom=Side(style="thin", color="4472C4"))
+TEMPLATE_PATH = Path(__file__).parent.parent / "assets" / "Monthly Billing Report - Template.xlsx"
 
-BLUE = "2F5496"; BLACK = "000000"; GRAY_FILL = "D6E4F0"; HEADER_FILL = "BDD7EE"; BLUE_LINK = "0563C1"
+# Template column layout (see the header row 17: QTY|UN|DESCRIPTION … RATE|AMOUNT)
+QTY_COL = 1          # A
+UNIT_COL = 2         # B
+DESC_COL = 3         # C  (merged C:E on data rows)
+DESC_COL_END = 5     # E
+RATE_COL = 10        # J
+AMOUNT_COL = 11      # K  (merged K:L on data rows)
+AMOUNT_COL_END = 12  # L
+MAX_COL = 12
+SECTION_MARKER_COL = DESC_COL  # section labels ("QA Analyst I") live in column C
+DATE_CELL = "I8"     # value cell next to the "DATE" label (merged I8:L8)
+SERVICE_PERIOD_CELL = "C18"  # blank line under the table header (merged C18:F18)
 
-def build_invoice_header(month, year):
+INVOICE_FONT = "Times New Roman"  # everything we write into the invoice uses this typeface
+
+def _tnr(cell, bold=None):
+    """Retype a written cell in Times New Roman, keeping its size/color; `bold`
+    overrides the weight when given (collaborators are written un-bolded)."""
+    f = cell.font
+    cell.font = Font(name=INVOICE_FONT, size=f.size, color=f.color,
+                     bold=f.bold if bold is None else bold,
+                     italic=f.italic, underline=f.underline)
+
+# section label (col C) -> the weekly-report role bucket it bills
+ROLE_SECTIONS = [
+    ("QA Analyst III", "q3"),
+    ("QA Analyst II", "q2"),
+    ("QA Analyst I", "q1"),
+]
+
+def invoice_date(month, year):
+    """Last calendar day of the billed month (shown as the invoice DATE)."""
     month_num = get_month_number(month)
-    month_full = get_month_name(month_num, False)
     last_day = calendar.monthrange(year, month_num)[1]
-    return {
-        "date": f"{month_num}/{last_day}/{year}",
-        "servicePeriod": f"{month_full} 1 - {last_day}, {year}",
-        "poNumber": "70000801748",
-        "billToName": "Meta Platforms, Inc.",
-        "billToAddress": ["1601 Willow Rd", "Menlo Park, CA 94025", "United States"],
-        "shipToName": "Meta Platforms, Inc.",
-        "shipToAddress": ["7300 Gateway Blvd.", "Dock 15 - Ship Happens - FB1", "Newark, CA 94560 - USA"],
-        "paymentTerms": "Within 30 days",
-        "dueDate": "",
-        "taxId": "91-1864740",
-        "companyName": "SOFTTEK INTEGRATION SYSTEMS, INC",
-    }
+    return date(year, month_num, last_day)
 
-def write_invoice_sheet(wb, billing, month, year, title="Invoice"):
-    """Add a Softtek invoice worksheet to an existing workbook."""
-    header = build_invoice_header(month, year)
-    ws = wb.create_sheet(title)
-    widths = [10,8,12,12,12,12,12,12,12,12,12,16]
-    for i,w in enumerate(widths,1): ws.column_dimensions[get_column_letter(i)].width = w
+def _find_row_by_value(ws, value, col):
+    """First row whose cell in `col` equals `value` exactly, or None."""
+    for row in range(1, ws.max_row + 1):
+        if ws.cell(row, col).value == value:
+            return row
+    return None
 
-    blue_font = Font(color=BLUE, size=11)
-    blue_bold = Font(color=BLUE, bold=True, size=11)
-    black11 = Font(color=BLACK, size=11)
-    black_bold11 = Font(color=BLACK, bold=True, size=11)
-    gray_fill = fill(GRAY_FILL)
-    hdr_fill = fill(HEADER_FILL)
-    b_all = border_all()
+def _copy_cell_style(src, dst):
+    dst.font = copy.copy(src.font)
+    dst.fill = copy.copy(src.fill)
+    dst.border = copy.copy(src.border)
+    dst.alignment = copy.copy(src.alignment)
+    dst.number_format = src.number_format
 
-    r = 3
-    ws.merge_cells(f"K{r}:L{r}"); ws.cell(r,11).value = header["companyName"]; ws.cell(r,11).font = blue_font; ws.cell(r,11).alignment = Alignment(horizontal="right"); r+=1
-    ws.merge_cells(f"K{r}:L{r}"); ws.cell(r,11).value = f"Tax ID {header['taxId']}"; ws.cell(r,11).font = blue_font; ws.cell(r,11).alignment = Alignment(horizontal="right"); r+=2
+def _insert_styled_rows(ws, at_row, count, style_row):
+    """Insert `count` rows at `at_row`, cloning styles + merges from `style_row`.
 
-    ws.merge_cells(f"H{r}:J{r}"); ws.cell(r,8).value="INVOICE #"; ws.cell(r,8).font=blue_font; ws.cell(r,8).alignment=Alignment(horizontal="center"); r+=1
+    openpyxl's insert_rows shifts existing cell values down but leaves merged
+    ranges and formula references untouched and the new rows unstyled. So we move
+    the merges at/below the insertion point down ourselves, then restyle the fresh
+    rows from the template's pre-formatted placeholder row (`style_row`).
+    """
+    if count <= 0:
+        return
+    style_merges = [(m.min_col, m.max_col) for m in ws.merged_cells.ranges
+                    if m.min_row == style_row and m.max_row == style_row]
+    below = [m for m in list(ws.merged_cells.ranges) if m.min_row >= at_row]
+    for m in below:
+        ws.unmerge_cells(str(m))
+    ws.insert_rows(at_row, count)
+    for m in below:
+        ws.merge_cells(start_row=m.min_row + count, end_row=m.max_row + count,
+                       start_column=m.min_col, end_column=m.max_col)
+    for i in range(count):
+        r = at_row + i
+        for col in range(1, MAX_COL + 1):
+            _copy_cell_style(ws.cell(style_row, col), ws.cell(r, col))
+        for c0, c1 in style_merges:
+            ws.merge_cells(start_row=r, end_row=r, start_column=c0, end_column=c1)
 
-    ws.cell(r,2).value="BILL TO"; ws.cell(r,2).font=blue_font
-    ws.merge_cells(f"H{r}:J{r}"); ws.cell(r,8).value="DATE"; ws.cell(r,8).font=blue_font; ws.cell(r,8).alignment=Alignment(horizontal="center")
-    ws.merge_cells(f"K{r}:L{r}"); ws.cell(r,11).value=header["date"]; ws.cell(r,11).alignment=Alignment(horizontal="right"); r+=1
+def _clear_row(ws, row):
+    """Turn `row` into a clean blank spacer — no merges, value, border or fill."""
+    for m in [m for m in list(ws.merged_cells.ranges) if m.min_row == row and m.max_row == row]:
+        ws.unmerge_cells(str(m))
+    for col in range(1, MAX_COL + 1):
+        c = ws.cell(row, col)
+        c.value = None
+        c.border = Border()
+        c.fill = PatternFill()
 
-    ws.merge_cells(f"B{r}:C{r}"); ws.cell(r,2).value=header["billToName"]; ws.cell(r,2).font=black_bold11; ws.cell(r,2).border=blue_border(); r+=1
-    for line in header["billToAddress"]:
-        ws.merge_cells(f"B{r}:C{r}"); ws.cell(r,2).value=line; ws.cell(r,2).font=black11; r+=1
+def _write_employee_row(ws, row, emp, work_refs, tag_refs):
+    """Fill one line item (QTY / UN / DESCRIPTION / RATE / AMOUNT) at `row`.
 
-    ws.cell(r,2).value="SHIP TO"; ws.cell(r,2).font=blue_font
-    ws.merge_cells(f"F{r}:G{r}"); ws.cell(r,6).value="PAYMENT TERMS"; ws.cell(r,6).fill=gray_fill; ws.cell(r,6).font=blue_font; ws.cell(r,6).alignment=Alignment(horizontal="center")
-    ws.cell(r,10).value="DUE DATE"; ws.cell(r,10).fill=gray_fill; ws.cell(r,10).font=blue_font; ws.cell(r,10).alignment=Alignment(horizontal="center")
-    ws.cell(r,12).value="P.O. NO."; ws.cell(r,12).fill=gray_fill; ws.cell(r,12).font=blue_font; ws.cell(r,12).alignment=Alignment(horizontal="center"); r+=1
+    Everything is typed in Times New Roman; collaborator names are NOT bolded.
+    """
+    ref = work_refs.get(id(emp.get("_emp")))
+    # QTY: live link to the Weekly Hours "Work Hrs" cell when available, else static.
+    qty = ws.cell(row, QTY_COL)
+    qty.value = f"={ref}" if ref else emp["qty"]
+    qty.alignment = Alignment(horizontal="right", vertical=qty.alignment.vertical)
+    _tnr(qty)
 
-    ws.merge_cells(f"B{r}:C{r}"); ws.cell(r,2).value=header["shipToName"]; ws.cell(r,2).font=black_bold11
-    ws.merge_cells(f"F{r}:G{r}"); ws.cell(r,6).value=header["paymentTerms"]; ws.cell(r,6).alignment=Alignment(horizontal="center"); ws.cell(r,6).font=black11
-    ws.cell(r,10).value=header["dueDate"]; ws.cell(r,10).alignment=Alignment(horizontal="center")
-    ws.cell(r,12).value=header["poNumber"]; ws.cell(r,12).alignment=Alignment(horizontal="center"); ws.cell(r,12).font=black_bold11; r+=1
+    unit = ws.cell(row, UNIT_COL); unit.value = emp["unit"]; _tnr(unit)  # "Hrs"
 
-    for line in header["shipToAddress"]:
-        ws.merge_cells(f"B{r}:C{r}"); ws.cell(r,2).value=line; ws.cell(r,2).font=black11; r+=1
+    name = emp["fullName"].lstrip("↳ ").strip()
+    # DESCRIPTION: live link to the Weekly Hours "Tag" cell when available, so an edit
+    # to a collaborator's Tag flows into the invoice; else the static "Name - Product - Pilar".
+    tag_ref = tag_refs.get(id(emp.get("_emp")))
+    desc = ws.cell(row, DESC_COL)
+    desc.value = f"={tag_ref}" if tag_ref else f"{name} - {emp['product']} - {emp['pilar']}"
+    _tnr(desc, bold=False)  # collaborators never bold
+    if emp["isBackup"]:
+        desc.alignment = Alignment(indent=1, horizontal=desc.alignment.horizontal,
+                                   vertical=desc.alignment.vertical)
 
-    while r < 17: r+=1
+    rate = ws.cell(row, RATE_COL)
+    rate.value = emp["rate"]; rate.number_format = '"$"0.00'; _tnr(rate)
 
-    # Table header
-    ws.cell(r,1).value="QTY"; ws.cell(r,2).value="UN"; ws.merge_cells(f"C{r}:J{r}"); ws.cell(r,3).value="DESCRIPTION"; ws.cell(r,11).value="RATE"; ws.cell(r,12).value="AMOUNT"
-    for col in [1,2,3,11,12]:
-        c = ws.cell(r,col); c.fill=hdr_fill; c.font=blue_bold; c.alignment=Alignment(horizontal="center"); c.border=b_all
-    for cc in range(3,11):
-        c=ws.cell(r,cc); c.fill=hdr_fill; c.border=b_all
-    r+=1
+    # AMOUNT = QTY * RATE, so it tracks any manual edit to the linked hours.
+    amt = ws.cell(row, AMOUNT_COL)
+    amt.value = f"=A{row}*J{row}"; amt.number_format = '"$"#,##0.00'; _tnr(amt)
 
-    ws.merge_cells(f"C{r}:J{r}"); ws.cell(r,3).value=f"Services Period: {header['servicePeriod'].replace(' - ',' to ').replace(',','')}"; ws.cell(r,3).font=black11; r+=1
-    ws.merge_cells(f"C{r}:J{r}"); ws.cell(r,3).value="MSOW INB2830770. Order Form No. 1"; ws.cell(r,3).font=black11; r+=1
-    ws.merge_cells(f"C{r}:J{r}"); ws.cell(r,3).value="Softtek nearshore program for QA analysts"; ws.cell(r,3).font=black11; r+=1
-    r+=1
+def _write_totals(ws, billing, amount_rows):
+    """Rewrite the template's SUB-TOTAL / discount / TOTAL formulas for the final
+    row positions (they moved as rows were inserted, so their refs need fixing)."""
+    st = _find_row_by_value(ws, "SUB-TOTAL", 8)
+    disc = _find_row_by_value(ws, "Volume Discount", 8)
+    tot = _find_row_by_value(ws, "TOTAL", 8)
 
-    def add_section(label, employees):
-        nonlocal r
-        if not employees: return
-        ws.merge_cells(f"C{r}:J{r}"); ws.cell(r,3).value=label; ws.cell(r,3).font=black_bold11; r+=1
-        for emp in employees:
-            ws.cell(r,1).value=emp["qty"]; ws.cell(r,1).alignment=Alignment(horizontal="right"); ws.cell(r,1).font=black11
-            ws.cell(r,2).value=emp["unit"]; ws.cell(r,2).alignment=Alignment(horizontal="center"); ws.cell(r,2).font=black11
-            ws.merge_cells(f"C{r}:J{r}")
-            name = emp["fullName"].lstrip("↳ ").strip()
-            ws.cell(r,3).value=f"{name} - {emp['product']} - {emp['pilar']}"
-            ws.cell(r,3).font = black11 if emp["isBackup"] else black_bold11
-            if emp["isBackup"]: ws.cell(r,3).alignment = Alignment(indent=1)
-            ws.cell(r,11).value=emp["rate"]; ws.cell(r,11).number_format='"$"#,##0.00'; ws.cell(r,11).alignment=Alignment(horizontal="right"); ws.cell(r,11).font=black11
-            ws.cell(r,12).value=emp["amount"]; ws.cell(r,12).number_format='"$"#,##0.00'; ws.cell(r,12).alignment=Alignment(horizontal="right"); ws.cell(r,12).font=black11
-            for col in [1,2,11,12]:
-                ws.cell(r,col).border=b_all
-            for cc in range(3,11):
-                ws.cell(r,cc).border=b_all
-            r+=1
+    sc = ws.cell(st, AMOUNT_COL_END)
+    sc.value = f"=SUM(K{amount_rows[0]}:L{amount_rows[-1]})" if amount_rows else billing["subtotal"]
+    sc.number_format = "#,##0.00"; _tnr(sc)
 
-    add_section("QA Analyst I", billing["q1"])
-    add_section("QA Analyst II", billing["q2"])
-    add_section("QA Analyst III", billing["q3"])
-    r+=1
+    if disc is not None:
+        dc = ws.cell(disc, AMOUNT_COL_END)
+        dc.value = f"=(L{st}*{DISCOUNT_RATE})"; dc.number_format = "#,##0.00"; _tnr(dc)
+        words = ws.cell(disc, 1); words.value = amount_to_words(billing["total"]); _tnr(words)  # amount in words
+    if tot is not None:
+        tc = ws.cell(tot, AMOUNT_COL_END)
+        tc.value = f"=L{st}-L{disc}"; tc.number_format = "#,##0.00"; _tnr(tc)
 
-    # Totals
-    ws.merge_cells(f"A{r}:B{r}"); ws.cell(r,1).value="Saxena, Sarthak"; ws.cell(r,1).font=black11; ws.cell(r,1).border=b_all
-    ws.merge_cells(f"C{r}:H{r}"); ws.cell(r,3).border=b_all
-    ws.merge_cells(f"I{r}:K{r}"); ws.cell(r,9).value="SUB-TOTAL"; ws.cell(r,9).font=blue_font; ws.cell(r,9).alignment=Alignment(horizontal="right"); ws.cell(r,9).border=b_all
-    ws.cell(r,12).value=billing["subtotal"]; ws.cell(r,12).number_format="#,##0.00"; ws.cell(r,12).alignment=Alignment(horizontal="right"); ws.cell(r,12).font=black11; ws.cell(r,12).border=b_all; r+=1
+def write_invoice_sheet(ws, billing, month, year, work_refs=None, tag_refs=None):
+    """Fill the Monthly Billing template's invoice sheet with the QA line items.
 
-    ws.merge_cells(f"A{r}:B{r}"); ws.cell(r,1).value=amount_to_words(billing["total"]); ws.cell(r,1).font=Font(size=9); ws.cell(r,1).border=b_all
-    ws.merge_cells(f"C{r}:H{r}"); ws.cell(r,3).border=b_all
-    ws.merge_cells(f"I{r}:K{r}"); ws.cell(r,9).value="Volume Discount"; ws.cell(r,9).font=blue_font; ws.cell(r,9).alignment=Alignment(horizontal="right"); ws.cell(r,9).border=b_all
-    ws.cell(r,12).value=billing["discountAmount"]; ws.cell(r,12).number_format="#,##0.00"; ws.cell(r,12).alignment=Alignment(horizontal="right"); ws.cell(r,12).border=b_all; r+=1
+    ``ws`` is the template sheet (already loaded into the combined workbook and
+    renamed to "Invoice"). Only the dynamic parts are written — the DATE, the
+    QA Analyst I/II/III employee rows, and the totals formulas — everything else
+    (bill-to / ship-to, PO number, footer, styling) comes straight from the
+    template instead of being drawn from scratch.
 
-    ws.merge_cells(f"A{r}:B{r}"); ws.cell(r,1).border=b_all
-    ws.merge_cells(f"C{r}:H{r}"); ws.cell(r,3).value="PROJECT"; ws.cell(r,3).font=blue_font; ws.cell(r,3).border=b_all
-    ws.merge_cells(f"I{r}:K{r}"); ws.cell(r,9).border=b_all; ws.cell(r,12).border=b_all; r+=1
+    When ``work_refs`` (id(emp) -> "'Weekly Hours'!<cell>") is provided, each QTY
+    cell becomes a live formula pointing at that collaborator's Work Hrs cell, and
+    AMOUNT / SUB-TOTAL / discount / TOTAL are formulas too — so a manual edit in
+    the Weekly Hours tab flows straight into the invoice without re-running.
+    """
+    work_refs = work_refs or {}
+    tag_refs = tag_refs or {}
+    month_num = get_month_number(month)
+    last_day = calendar.monthrange(year, month_num)[1]
 
-    ws.merge_cells(f"A{r}:B{r}"); ws.cell(r,1).border=b_all
-    ws.merge_cells(f"C{r}:H{r}"); ws.cell(r,3).value="1-0000029582-3"; ws.cell(r,3).font=black11; ws.cell(r,3).border=b_all
-    ws.merge_cells(f"I{r}:J{r}"); ws.cell(r,9).value="TOTAL"; ws.cell(r,9).font=Font(color=BLUE,bold=True,size=11); ws.cell(r,9).alignment=Alignment(horizontal="right"); ws.cell(r,9).border=b_all
-    ws.cell(r,11).value="USD"; ws.cell(r,11).alignment=Alignment(horizontal="center"); ws.cell(r,11).font=black_bold11; ws.cell(r,11).border=b_all
-    ws.cell(r,12).value=billing["total"]; ws.cell(r,12).number_format="#,##0.00"; ws.cell(r,12).font=black_bold11; ws.cell(r,12).alignment=Alignment(horizontal="right"); ws.cell(r,12).border=b_all; r+=2
+    # DATE — last calendar day of the billed month (centered across I8:L8).
+    d = ws[DATE_CELL]
+    d.value = invoice_date(month, year); d.number_format = "M/D/YYYY"
+    d.alignment = Alignment(horizontal="center", vertical=d.alignment.vertical)
+    _tnr(d)
 
-    # Footer
-    ws.merge_cells(f"A{r}:L{r}"); ws.cell(r,1).value="Please wire your payments to:  Wells Fargo Bank,  250 East Ponce De Leon Avenue, GA9187"; ws.cell(r,1).font=Font(size=10); r+=1
-    ws.merge_cells(f"A{r}:L{r}"); ws.cell(r,1).value="Decatur, Georgia 30030 United States Beneficiary: SOFTTEK INTEGRATION SYSTEMS, INC."; ws.cell(r,1).font=Font(size=10); r+=1
-    ws.cell(r,1).value="softtek.com"; ws.cell(r,1).font=Font(color=BLUE_LINK, underline="single", size=10)
-    ws.merge_cells(f"C{r}:L{r}"); ws.cell(r,3).value="15303 Dallas Pkwy, Suite 200, Addison TX 75001, US Account Number: 2000055970549"; ws.cell(r,3).font=Font(size=10); r+=1
-    ws.cell(r,1).value="15303 Dallas Pkwy, Suite 200"; ws.cell(r,1).font=Font(color=BLUE_LINK, size=10)
-    ws.merge_cells(f"C{r}:L{r}"); ws.cell(r,3).value="for ACH Payments 061000227 (ABA) / PNBPUS33 (SWIFT) / 0407 (CHIP); for international and"; ws.cell(r,3).font=Font(size=10); r+=1
-    ws.cell(r,1).value="Addison, TX 75001"; ws.cell(r,1).font=Font(color=BLUE_LINK, size=10)
-    ws.merge_cells(f"C{r}:L{r}"); ws.cell(r,3).value="Domestic Wire Transfers 121000248 (ABA) / WFBIUS6S (SWIFT) / 0407 (CHIP)."; ws.cell(r,3).font=Font(size=10); r+=1
-    ws.merge_cells(f"A{r}:L{r}"); ws.cell(r,1).value="If you have any questions, please contact Accounts Receivable at:  Office 1(469) 283-2506"; ws.cell(r,1).alignment=Alignment(horizontal="center"); ws.cell(r,1).font=Font(size=10); r+=1
-    ws.merge_cells(f"A{r}:L{r}"); ws.cell(r,1).value="Fax 1(214) 580-9778 Toll free from USA 1877-4723-029 Ext1031/1109 usbilling@softtek.com"; ws.cell(r,1).alignment=Alignment(horizontal="center"); ws.cell(r,1).font=Font(size=10)
+    # Services Period line (e.g. "Services Period: 7/1/2026 to 7/31/2026").
+    sp = ws[SERVICE_PERIOD_CELL]
+    sp.value = f"Services Period: {month_num}/1/{year} to {month_num}/{last_day}/{year}"
+    _tnr(sp)
+
+    # Pass 1 — make room under each section marker: n employee rows + 1 blank
+    # spacer row (so sections aren't cramped). The template ships 1 placeholder row,
+    # so we insert n more. Bottom-up (III -> II -> I) so inserting under a lower
+    # section never shifts a higher section marker we still have to locate.
+    for label, role_key in ROLE_SECTIONS:
+        marker_row = _find_row_by_value(ws, label, SECTION_MARKER_COL)
+        if marker_row is None:
+            raise ValueError(f"Section marker not found in template: {label}")
+        _insert_styled_rows(ws, marker_row + 2, len(billing[role_key]), marker_row + 1)
+
+    # Pass 2 — fill rows (layout is final now, so formula row refs are stable).
+    amount_rows = []
+    for label, role_key in ROLE_SECTIONS:
+        marker_row = _find_row_by_value(ws, label, SECTION_MARKER_COL)
+        employees = billing[role_key]
+        for i, emp in enumerate(employees):
+            row = marker_row + 1 + i
+            _write_employee_row(ws, row, emp, work_refs, tag_refs)
+            amount_rows.append(row)
+        _clear_row(ws, marker_row + 1 + len(employees))  # blank spacer after the section
+    amount_rows.sort()
+
+    _write_totals(ws, billing, amount_rows)
     return ws

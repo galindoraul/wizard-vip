@@ -16,10 +16,10 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-from openpyxl import Workbook
+from openpyxl import load_workbook
 
 from core import fetch_sheet, fetch_team_roster, read_pto, read_team, build_report, write_weekly_sheet, DEFAULT_SHEET_ID
-from billing import build_billing, write_invoice_sheet, load_rates, check_rates, write_rates_template, RATES_PATH_DEFAULT
+from billing import build_billing, write_invoice_sheet, load_rates, check_rates, write_rates_template, RATES_PATH_DEFAULT, TEMPLATE_PATH
 
 DRIVE_OUTPUTS_REL = "Shared drives/Meta - STK/Project Tracking/Automation/Automation Outputs"
 DRIVE_OUTPUT_SUBFOLDER = "Weekly Hours Report"
@@ -38,8 +38,8 @@ def resolve_output_path(month, year, override):
                 folder = outputs / DRIVE_OUTPUT_SUBFOLDER
                 folder.mkdir(exist_ok=True)
                 return folder / fname
-    print("  WARN: Shared drive 'Automation Outputs' not found locally; saving to scripts/output/ instead")
-    return Path(__file__).parent / "output" / fname
+    print("  WARN: Shared drive 'Automation Outputs' not found locally; saving to your home folder instead")
+    return Path.home() / fname
 
 def _validate_rates(team, rates_path):
     """Return True if every collaborator has a rate; else write a template, report, and return False."""
@@ -61,9 +61,8 @@ def main():
     ap.add_argument("--year", type=int, help="Year, default current")
     ap.add_argument("--sheet-id", default=DEFAULT_SHEET_ID, help="Google Sheet ID (collaborators + PTO)")
     ap.add_argument("--sheet-xlsx", help="Use an already-fetched local Sheet xlsx instead of downloading")
-    ap.add_argument("--rates", help="Path to rates.json (default: <skill root>/rates.json)")
+    ap.add_argument("--rates", help="Path to rates.json (default: scripts/rates.json)")
     ap.add_argument("--check-rates", action="store_true", help="Only validate rates.json (no month needed) and exit")
-    ap.add_argument("--no-cache", action="store_true", help="Force a fresh download even if a valid cache exists")
     ap.add_argument("--output", help="Output Excel path (default: Shared drive 'Weekly Hours Report' folder)")
     args = ap.parse_args()
 
@@ -90,7 +89,7 @@ def main():
         print(f"Using local Sheet export: {sheet_xlsx}")
     else:
         print("Fetching Google Sheet (collaborators + PTO)...")
-        sheet_xlsx = fetch_sheet(month, year, sheet_id=args.sheet_id, force=args.no_cache)
+        sheet_xlsx = fetch_sheet(month, year, sheet_id=args.sheet_id)
         print(f"  Using local copy: {sheet_xlsx}")
 
     print("Reading PTO (monthly tab)...")
@@ -115,10 +114,16 @@ def main():
     billing = build_billing(weekly, rates)
     print(f"  Subtotal: ${billing['subtotal']:,.2f}  Discount {billing['discountRate']*100:.0f}%: ${billing['discountAmount']:,.2f}  Total: ${billing['total']:,.2f}")
 
-    print("Writing combined workbook (Weekly Hours + Invoice)...")
-    wb = Workbook(); wb.remove(wb.active)
-    write_weekly_sheet(wb, weekly)
-    write_invoice_sheet(wb, billing, month, year)
+    print("Writing combined workbook (Weekly Hours + Invoice from template)...")
+    if not TEMPLATE_PATH.exists():
+        print(f"ERROR: invoice template not found at {TEMPLATE_PATH}")
+        sys.exit(3)
+    wb = load_workbook(TEMPLATE_PATH)              # the invoice comes pre-formatted from the template
+    invoice_ws = wb[wb.sheetnames[0]]
+    invoice_ws.title = "Invoice"
+    work_refs, tag_refs = write_weekly_sheet(wb, weekly)  # add Weekly Hours tab; returns Work Hrs + Tag cell refs
+    wb.move_sheet("Weekly Hours", offset=-1)       # show Weekly Hours as the first tab
+    write_invoice_sheet(invoice_ws, billing, month, year, work_refs=work_refs, tag_refs=tag_refs)
 
     out_path = resolve_output_path(month, year, args.output)
     out_path.parent.mkdir(parents=True, exist_ok=True)

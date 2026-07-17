@@ -1,10 +1,10 @@
 {
   "files.exclude": {
-    ".claude/skills/click2sync-status-checker": true,
+    ".claude/skills/click2sync-status-checker": false,
     ".claude/skills/click2sync-weekly-report": true,
     ".claude/skills/weekly-hours-report": false,
     "manifest.txt": true,
-    ".gitignore": true,
+    ".gitignore": false,
     "install.sh": true,
     ".github": true
   },
