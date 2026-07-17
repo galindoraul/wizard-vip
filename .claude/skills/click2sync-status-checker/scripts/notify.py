@@ -1,17 +1,20 @@
 #!/usr/bin/env python3
 """Send C2C reminder to Google Chat space via webhook.
-Uses @all + individual @mentions for missing people.
-Resolves gchat user IDs from the space member list (cached 1hr)."""
+Mentions @Diana and @Ana instead of @all.
+Resolves gchat user IDs from the space member list (cached 1hr).
+Shows who also missed last week with streak counter."""
 
 import json
 import os
 import subprocess
 import sys
 import time
-from datetime import datetime, timedelta
 
 WEBHOOK_URL = "https://chat.googleapis.com/v1/spaces/AAQA6X4LVDY/messages?key=AIzaSyDdI0hCZtE6vySjMm-WEfRq3CPzqKqqsHI&token=9y7jxKd60u_-m6D2OvDktHb3vBnwOnzFsN0y4snwe5w"
 SPACE_NAME = "spaces/AAQA6X4LVDY"
+
+# Managers to notify (instead of @all) and exclude from missing list
+MANAGERS = ["alfardiana", "cortezana"]
 
 SCRIPTS_DIR = os.path.dirname(os.path.realpath(__file__))
 CACHE_DIR = "/tmp"
@@ -34,7 +37,7 @@ def get_status():
         (i for i, l in enumerate(lines) if l.strip().startswith("{")), None
     )
     if json_start is None:
-        print("Error: No JSON from read-status", file=sys.stderr)
+        print("Error: No JSON from read-submissions", file=sys.stderr)
         sys.exit(1)
 
     return json.loads("\n".join(lines[json_start:]))
@@ -93,34 +96,73 @@ def get_space_members():
     return email_to_id
 
 
+def mention(meta_unixname, name, email_to_id):
+    """Build @mention string for a person."""
+    email = f"{meta_unixname}@meta.com".lower() if meta_unixname else ""
+    gchat_id = email_to_id.get(email, "")
+    if gchat_id:
+        return f"<users/{gchat_id}>"
+    return name
+
+
 def build_message(status, email_to_id):
-    """Build webhook message with @all and individual @mentions."""
+    """Build webhook message with @Diana/@Ana and individual @mentions."""
     missing = status.get("missing", [])
+    also_missed_last_week = status.get("alsoMissedLastWeek", [])
     week = status.get("week", "")
 
     if not missing:
         return None
 
-    # Build @mentions for each missing person
-    mentions = []
+    # Filter out managers from missing list
+    missing = [p for p in missing if p.get("meta_unixname", "") not in MANAGERS]
+
+    if not missing:
+        return None
+
+    # Build manager mentions
+    manager_mentions = []
+    for mgr in MANAGERS:
+        mgr_mention = mention(mgr, mgr, email_to_id)
+        manager_mentions.append(mgr_mention)
+    managers_line = " ".join(manager_mentions)
+
+    # Build missing list
+    missing_lines = []
     for person in sorted(missing, key=lambda x: x["name"]):
-        name = person["name"]
-        meta_unixname = person.get("meta_unixname", "")
-        email = f"{meta_unixname}@meta.com".lower() if meta_unixname else ""
-        gchat_id = email_to_id.get(email, "")
+        m = mention(person.get("meta_unixname", ""), person["name"], email_to_id)
+        missing_lines.append(f"  \u2022 {m}")
 
-        if gchat_id:
-            mentions.append(f"• <users/{gchat_id}>")
-        else:
-            mentions.append(f"• {name}")
+    missing_text = "\n".join(missing_lines)
 
-    mentions_text = "\n".join(mentions)
+    # Build message
+    msg = f"{managers_line}\n\nC2C Reminder \u2014 Semana {week}\n\nFaltan por hacer su C2C ({len(missing)}):\n{missing_text}"
 
-    payload = {
-        "text": f"<users/all> ⚠️ C2C Reminder — Semana {week}\n\nFaltan por hacer su C2C ({len(missing)}):\n{mentions_text}\n\nRealicen sus tasks y corran /tasks-to-click2sync antes del viernes."
-    }
+    # Add "also missed last week" section if applicable
+    if also_missed_last_week:
+        # Filter out managers
+        also_missed = [
+            p
+            for p in also_missed_last_week
+            if p.get("meta_unixname", "") not in MANAGERS
+        ]
+        if also_missed:
+            also_lines = []
+            for person in sorted(also_missed, key=lambda x: x["name"]):
+                m = mention(
+                    person.get("meta_unixname", ""), person["name"], email_to_id
+                )
+                streak = person.get("streak", 1)
+                if streak >= 2:
+                    also_lines.append(f"  \u2022 {m} ({streak} semanas seguidas)")
+                else:
+                    also_lines.append(f"  \u2022 {m}")
+            also_text = "\n".join(also_lines)
+            msg += f"\n\nTambi\u00e9n faltaron la semana pasada ({len(also_missed)}):\n{also_text}"
 
-    return payload
+    msg += "\n\nRealicen sus tasks y corran /tasks-to-click2sync antes del viernes."
+
+    return {"text": msg}
 
 
 def send_webhook(payload):
@@ -160,8 +202,11 @@ def main():
     status = get_status()
     missing = status.get("missing", [])
 
+    # Filter out managers
+    missing = [p for p in missing if p.get("meta_unixname", "") not in MANAGERS]
+
     if not missing:
-        print("No one missing — no notification needed.")
+        print("No one missing \u2014 no notification needed.")
         return
 
     # Get space members for @mentions

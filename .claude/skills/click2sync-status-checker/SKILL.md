@@ -20,20 +20,29 @@ ALWAYS use `/usr/bin/python3` to run scripts. NEVER use `python` or `python3` wi
 Parse the JSON output and present like this:
 
 ```
-📊 C2C Status — Semana Jul 7-13
+C2C Status — Semana Jul 13-19
 
-✅ Ya hicieron su C2C (3):
+Ya hicieron su C2C (3):
   - Johan Jaramillo
   - Maria Lopez
   - Raul Galindo
 
-❌ Faltan por hacer su C2C (2):
+Faltan por hacer su C2C (2):
   - Carlos Perez
   - Ana Rodriguez
 
-⏸️ En PTO toda la semana (1):
+También faltaron la semana pasada (1):
+  - Carlos Perez (2 semanas seguidas)
+
+En PTO toda la semana (1):
   - Pedro Sanchez
 ```
+
+**Rules:**
+- The "También faltaron la semana pasada" section uses the `alsoMissedLastWeek` array from the JSON
+- Show the `streak` value as "(N semanas seguidas)" only when streak >= 2
+- If `alsoMissedLastWeek` is empty, do NOT show that section
+- Diana Alfaro and Ana Cortez are managers — they are already excluded by the script, never show them
 
 ### Step 3: Ask about notification
 
@@ -45,10 +54,10 @@ If user says yes, run:
 /usr/bin/python3 scripts/notify.py
 ```
 
-After the script runs, say: "✅ Recordatorio enviado al grupo."
+After the script runs, say: "Listo, recordatorio enviado al grupo."
 
 If there is no one missing, do NOT ask about notifications. Just say:
-"✅ Todos hicieron su C2C esta semana."
+"Todos hicieron su C2C esta semana."
 
 ## Presentation Rules
 
@@ -61,7 +70,7 @@ If there is no one missing, do NOT ask about notifications. Just say:
 
 ### ALWAYS:
 - Present in Spanish
-- Use the emoji format shown above
+- Use the format shown above (no excessive emojis)
 - Sort names alphabetically in each group
 - Be concise
 

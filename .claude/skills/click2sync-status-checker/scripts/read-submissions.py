@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
 """Check who has done their C2C for the current week.
 Reads PTO Sheet for team list + absence info (cached 5 min).
-Reads Click2Sync/*.json for submission status.
+Reads Click2Sync/*.json via Google Drive API in parallel (always fresh).
+Also checks previous weeks for streak tracking.
 Outputs JSON for the agent to format."""
 
+import concurrent.futures
 import json
 import os
 import subprocess
 import sys
 import time
 from datetime import datetime, timedelta
-from pathlib import Path
 
 # Config is shared at .claude/skills/config.json
 SCRIPTS_DIR = os.path.dirname(os.path.realpath(__file__))
@@ -21,6 +22,12 @@ CONFIG_PATH = os.path.join(SKILLS_DIR, "config.json")
 PTO_SHEET_ID = "1Vae2OUAdYT3pMAQLLSYcNRBFklJ2WybctNia6OjNK_g"
 HEADER_ROW = 8
 ABSENCE_TYPES = ["pto", "ml", "pto(pa)", "ml(pa)"]
+
+# Click2Sync folder in Shared Drive "Meta - STK"
+C2C_FOLDER_ID = "1CsXnW7pq-l8E9A-ZpB1CvPtfS68END6W"
+
+# Managers excluded from the missing list
+EXCLUDED_UNIXNAMES = ["alfardiana", "cortezana"]
 
 CACHE_DIR = "/tmp"
 PTO_CACHE_TTL = 300  # 5 minutes
@@ -58,21 +65,43 @@ def get_week_tab_name(monday, sunday):
     return f"{monday.strftime('%b')} {monday.day}-{sunday.day}"
 
 
-def read_sheet_data(sheet_name):
-    cmd = [
-        "meta",
-        "google.sheets",
-        "read",
-        f"--id={PTO_SHEET_ID}",
-        f"--range='{sheet_name}'",
-        "--no-header",
-        "-o",
-        "json",
-    ]
-    result = subprocess.run(cmd, capture_output=True, text=True)
+def get_previous_week_keys(current_monday, num_weeks=2):
+    """Get week keys for the previous N weeks."""
+    keys = []
+    for i in range(1, num_weeks + 1):
+        prev_monday = current_monday - timedelta(weeks=i)
+        prev_sunday = prev_monday + timedelta(days=6)
+        keys.append(get_week_tab_name(prev_monday, prev_sunday))
+    return keys
+
+
+def run_meta_cmd(args):
+    """Run a meta CLI command and return stdout."""
+    result = subprocess.run(
+        ["meta"] + args,
+        capture_output=True,
+        text=True,
+    )
     if result.returncode != 0:
         return None
-    lines = result.stdout.strip().split("\n")
+    return result.stdout.strip()
+
+
+def read_sheet_data(sheet_name):
+    output = run_meta_cmd(
+        [
+            "google.sheets",
+            "read",
+            f"--id={PTO_SHEET_ID}",
+            f"--range='{sheet_name}'",
+            "--no-header",
+            "-o",
+            "json",
+        ]
+    )
+    if not output:
+        return None
+    lines = output.split("\n")
     json_start = next(
         (i for i, l in enumerate(lines) if l.strip().startswith("[")), None
     )
@@ -172,60 +201,112 @@ def get_team_members_and_absences(monday, friday):
     return all_members
 
 
-def get_c2c_folder():
-    """Find the Click2Sync folder via Google Drive Stream."""
-    cloud_storage = Path.home() / "Library" / "CloudStorage"
-    gdrive_dirs = list(cloud_storage.glob("GoogleDrive-*@meta.com"))
-    if not gdrive_dirs:
-        return None
-    base = gdrive_dirs[0]
-    c2c_folder = (
-        base
-        / "Shared drives"
-        / "Meta - STK"
-        / "Project Tracking"
-        / "Automation"
-        / "Automation Outputs"
-        / "Click2Sync"
+def get_c2c_files_from_drive():
+    """List all JSON files in the Click2Sync folder via Drive API."""
+    output = run_meta_cmd(
+        [
+            "google.drive",
+            "list",
+            f"--folder-id={C2C_FOLDER_ID}",
+            "--limit=200",
+            "--columns=name,id,mimeType",
+            "-o",
+            "json",
+        ]
     )
-    if not c2c_folder.exists():
+    if not output:
+        return []
+    lines = output.split("\n")
+    json_start = next(
+        (i for i, l in enumerate(lines) if l.strip().startswith("[")), None
+    )
+    if json_start is None:
+        return []
+    files = json.loads("\n".join(lines[json_start:]))
+    return [
+        f
+        for f in files
+        if f.get("mimeType") == "application/json"
+        or f.get("name", "").endswith(".json")
+    ]
+
+
+def read_drive_file(file_id):
+    """Read a file's content from Google Drive via API."""
+    output = run_meta_cmd(
+        [
+            "google.drive.file",
+            "get",
+            f"--id={file_id}",
+        ]
+    )
+    if not output:
         return None
-    return c2c_folder
+    try:
+        return json.loads(output)
+    except json.JSONDecodeError:
+        return None
 
 
-def get_all_persons(c2c_folder, week_key):
-    """Read all person JSONs. Returns submitted and known persons with meta_unixname."""
+def get_all_persons(week_key, previous_week_keys):
+    """Read all person JSONs from Drive API in parallel.
+    Returns submitted, known persons, and streak info."""
     submitted = []
-    known_persons = {}  # name.lower() -> {"name": ..., "meta_unixname": ...}
-    json_files = list(c2c_folder.glob("*.json"))
+    known_persons = {}
+    missed_weeks = {}
 
-    for json_path in json_files:
-        try:
-            with open(json_path) as f:
-                data = json.load(f)
-            person = data.get("person", json_path.stem)
-            meta_unixname = data.get("meta_unixname", "")
-            weeks = data.get("weeks", {})
+    # Get list of files from Drive
+    files = get_c2c_files_from_drive()
+    if not files:
+        return submitted, known_persons, missed_weeks
 
-            # Store person info regardless of submission
-            known_persons[person.lower()] = {
-                "name": person,
-                "meta_unixname": meta_unixname,
-            }
+    # Read all files in parallel
+    file_ids = [f["id"] for f in files if f.get("id")]
+    results = []
 
-            # Check if current week exists
-            if week_key in weeks and weeks[week_key]:
-                submitted.append(
-                    {
-                        "name": person,
-                        "meta_unixname": meta_unixname,
-                        "rows": len(weeks[week_key]),
-                    }
-                )
-        except (json.JSONDecodeError, OSError):
+    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+        future_to_id = {executor.submit(read_drive_file, fid): fid for fid in file_ids}
+        for future in concurrent.futures.as_completed(future_to_id):
+            data = future.result()
+            if data:
+                results.append(data)
+
+    # Process results
+    for data in results:
+        person = data.get("person", "")
+        meta_unixname = data.get("meta_unixname", "")
+        weeks = data.get("weeks", {})
+
+        if not person:
             continue
 
-    return submitted, known_persons
+        # Store person info
+        known_persons[person.lower()] = {
+            "name": person,
+            "meta_unixname": meta_unixname,
+        }
+
+        # Check if current week exists
+        if week_key in weeks and weeks[week_key]:
+            submitted.append(
+                {
+                    "name": person,
+                    "meta_unixname": meta_unixname,
+                    "rows": len(weeks[week_key]),
+                }
+            )
+
+        # Check previous weeks for streak
+        streak = 0
+        for prev_key in previous_week_keys:
+            if prev_key not in weeks or not weeks[prev_key]:
+                streak += 1
+            else:
+                break
+        if streak > 0:
+            missed_weeks[person.lower()] = streak
+
+    return submitted, known_persons, missed_weeks
 
 
 def main():
@@ -233,6 +314,7 @@ def main():
     monday, friday, sunday = get_current_week_dates()
     week_key = get_week_tab_name(monday, sunday)
     week_display = f"{monday.strftime('%b %d')} - {sunday.strftime('%b %d, %Y')}"
+    previous_week_keys = get_previous_week_keys(monday, num_weeks=2)
 
     # Get team members from PTO sheet
     members = get_team_members_and_absences(monday, friday)
@@ -240,16 +322,10 @@ def main():
         print(json.dumps({"status": "error", "message": "Could not read PTO sheet."}))
         sys.exit(1)
 
-    # Get C2C folder
-    c2c_folder = get_c2c_folder()
-    if not c2c_folder:
-        print(
-            json.dumps({"status": "error", "message": "Click2Sync folder not found."})
-        )
-        sys.exit(1)
-
-    # Get submissions and known persons
-    submissions, known_persons = get_all_persons(c2c_folder, week_key)
+    # Get submissions, known persons, and streak info via Drive API
+    submissions, known_persons, missed_weeks = get_all_persons(
+        week_key, previous_week_keys
+    )
     submitted_names = {s["name"].lower() for s in submissions}
 
     # Classify members
@@ -257,12 +333,15 @@ def main():
     missing = []
 
     for name, info in members.items():
-        # If all working days are absent → PTO all week
+        # Skip excluded managers
+        person_info = known_persons.get(name.lower(), {})
+        if person_info.get("meta_unixname", "") in EXCLUDED_UNIXNAMES:
+            continue
+
+        # If all working days are absent -> PTO all week
         if info["working_days"] > 0 and info["absent_days"] >= info["working_days"]:
             pto_all_week.append(name)
         elif name.lower() not in submitted_names:
-            # Get meta_unixname from known persons (previous weeks)
-            person_info = known_persons.get(name.lower(), {})
             missing.append(
                 {
                     "name": name,
@@ -270,10 +349,25 @@ def main():
                 }
             )
 
+    # Build "also missed last week" list
+    also_missed_last_week = []
+    for person in missing:
+        name_lower = person["name"].lower()
+        streak = missed_weeks.get(name_lower, 0)
+        if streak > 0:
+            also_missed_last_week.append(
+                {
+                    "name": person["name"],
+                    "meta_unixname": person["meta_unixname"],
+                    "streak": streak + 1,
+                }
+            )
+
     # Sort
     submitted_sorted = sorted(submissions, key=lambda x: x["name"])
     missing.sort(key=lambda x: x["name"])
     pto_all_week.sort()
+    also_missed_last_week.sort(key=lambda x: x["name"])
 
     report = {
         "status": "ok",
@@ -282,6 +376,7 @@ def main():
         "submitted": submitted_sorted,
         "missing": missing,
         "ptoAllWeek": pto_all_week,
+        "alsoMissedLastWeek": also_missed_last_week,
     }
 
     print(json.dumps(report))
