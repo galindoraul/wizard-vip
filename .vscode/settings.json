@@ -1,13 +1,21 @@
 {
   "files.exclude": {
-    ".claude/skills/click2sync-status-checker": false,
-    ".claude/skills/click2sync-weekly-report": false,
+    ".claude/skills/click2sync-status-checker": true,
+    ".claude/skills/click2sync-weekly-report": true,
+    ".claude/skills/weekly-hours-report": false,
+    "manifest.txt": true,
+    ".gitignore": true,
     "install.sh": true,
+    ".github": true
   },
 
   "search.exclude": {
-     ".claude/skills/click2sync-status-checker": false,
+    ".claude/skills/click2sync-status-checker": true,
     ".claude/skills/click2sync-weekly-report": true,
+    ".claude/skills/weekly-hours-report": true,
+    "manifest.txt": true,
+    ".gitignore": true,
     "install.sh": true,
+    ".github": true
   },
 }
