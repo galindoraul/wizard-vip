@@ -109,7 +109,7 @@ process_repo "$VIP_REPO_DIR" "wizard-vip"
 
 # Add wizard alias (auto-updates + ensures claude is installed)
 SHELL_RC="$HOME/.zshrc"
-ALIAS_LINE='alias wizard="curl -sL https://raw.githubusercontent.com/galindoraul/wizard-vip/main/install.sh 2>/dev/null | bash; command -v claude >/dev/null 2>&1 || devfeature install claude_code; cd ~/.wizard && claude"'
+ALIAS_LINE='alias wizard="curl -sL https://raw.githubusercontent.com/galindoraul/wizard-vip/main/install.sh 2>/dev/null | bash > /dev/null 2>&1; command -v claude >/dev/null 2>&1 || devfeature install claude_code; cd ~/.wizard && claude"'
 grep -v 'alias wizard=' "$SHELL_RC" > "$SHELL_RC.tmp" 2>/dev/null && mv "$SHELL_RC.tmp" "$SHELL_RC"
 echo '' >> "$SHELL_RC"
 echo "$ALIAS_LINE" >> "$SHELL_RC"
