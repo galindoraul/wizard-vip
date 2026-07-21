@@ -11,7 +11,7 @@ RAW_BASE_QA="https://raw.githubusercontent.com/galindoraul/wizard/main"
 RAW_BASE_VIP="https://raw.githubusercontent.com/galindoraul/wizard-vip/main"
 
 echo ""
-echo "🧙‍♂️ Wizard VIP"
+echo "🧙‍♂️ Wizard VIP "
 echo "───────────────────────────────────"
 echo ""
 
