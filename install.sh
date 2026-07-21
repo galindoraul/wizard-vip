@@ -27,31 +27,31 @@ clone_or_update() {
 
     # Try git first
     if [ -d "$repo_dir/.git" ]; then
-        if git -c http.https://github.com.sslVerify=false -c credential.helper= -C "$repo_dir" pull 2>/dev/null; then
+        if git -c http.https://github.com.sslVerify=false -C "$repo_dir" pull --rebase 2>/dev/null; then
             echo "📥 Updated $label via git"
             return 0
         else
             # Pull failed (conflict, network, etc.) — nuke and re-clone
             rm -rf "$repo_dir"
-            if git -c http.https://github.com.sslVerify=false -c credential.helper= clone "$repo_url" "$repo_dir" 2>/dev/null; then
+            if git -c http.https://github.com.sslVerify=false clone "$repo_url" "$repo_dir" 2>/dev/null; then
                 echo "📥 Re-cloned $label via git"
                 return 0
             fi
         fi
     else
-        if git -c http.https://github.com.sslVerify=false -c credential.helper= clone "$repo_url" "$repo_dir" 2>/dev/null; then
+        if git -c http.https://github.com.sslVerify=false clone "$repo_url" "$repo_dir" 2>/dev/null; then
             echo "📦 Cloned $label via git"
             return 0
         fi
     fi
 
-    # Fallback: download via curl using manifest
+    # Fallback: download via curl using manifest (bust CDN cache)
     echo "📥 Downloading $label files..."
     rm -rf "$repo_dir"
     mkdir -p "$repo_dir"
 
     local manifest
-    manifest=$(curl -sL "$raw_base/manifest.txt")
+    manifest=$(curl -sL "$raw_base/manifest.txt?t=$(date +%s)")
     if [ -z "$manifest" ]; then
         echo "   ❌ Could not download $label manifest"
         return 1
@@ -61,7 +61,7 @@ clone_or_update() {
         [ -z "$file" ] && continue
         local dir=$(dirname "$repo_dir/$file")
         mkdir -p "$dir"
-        curl -sL "$raw_base/$file" -o "$repo_dir/$file"
+        curl -sL "$raw_base/$file?t=$(date +%s)" -o "$repo_dir/$file"
     done <<< "$manifest"
 }
 
@@ -86,7 +86,7 @@ process_repo() {
         target="$CLAUDE_DIR/$subdir_name"
         mkdir -p "$target"
 
-        for item in "$subdir"*/; do
+        for item in "$subdir"/*/; do
             [ ! -d "$item" ] && continue
             item_name=$(basename "$item")
             ln -sf "$item" "$target/$item_name"
@@ -109,7 +109,7 @@ process_repo "$VIP_REPO_DIR" "wizard-vip"
 
 # Add wizard alias (auto-updates + ensures claude is installed)
 SHELL_RC="$HOME/.zshrc"
-ALIAS_LINE='alias wizard="(curl -sL https://raw.githubusercontent.com/galindoraul/wizard-vip/main/install.sh | bash > /dev/null 2>&1 &); command -v claude >/dev/null 2>&1 || devfeature install claude_code; cd ~/.wizard && claude"'
+ALIAS_LINE='alias wizard="curl -sL https://raw.githubusercontent.com/galindoraul/wizard-vip/main/install.sh 2>/dev/null | bash; command -v claude >/dev/null 2>&1 || devfeature install claude_code; cd ~/.wizard && claude"'
 grep -v 'alias wizard=' "$SHELL_RC" > "$SHELL_RC.tmp" 2>/dev/null && mv "$SHELL_RC.tmp" "$SHELL_RC"
 echo '' >> "$SHELL_RC"
 echo "$ALIAS_LINE" >> "$SHELL_RC"
