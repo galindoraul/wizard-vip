@@ -41,7 +41,7 @@ Jul→`Jul`, Ago→`Aug`, Sep→`Sep`, Oct→`Oct`, Nov→`Nov`, Dic→`Dec`.
 /usr/bin/python3 scripts/main.py --month Jul --year 2026
 ```
 
-Output → `Weekly-Hours-Billing-{Month}-{Year}.xlsx` in the Shared drive (see
+Output → `Softtek Time Report & Invoice - {Month} {Year}.xlsx` in the Shared drive (see
 [Output](#output)).
 
 > Use `/usr/bin/python3` — NOT bare `python3` (fbcode Python, no openpyxl).
@@ -147,27 +147,30 @@ abbreviations** (`Jul 2026`), never Spanish (no "Julio 2026").
 
 ## Output
 
-Saved into the team **Shared drive** via the synced Google Drive for Desktop mount:
+Saved into the **root of the `Shared drives` mount** via the synced Google Drive
+for Desktop mount:
 
 ```
-Shared drives/Meta - STK/Project Tracking/Automation/Automation Outputs/Weekly Hours Report/
-  └─ Weekly-Hours-Billing-{Month}-{Year}.xlsx
+~/Library/CloudStorage/GoogleDrive-{user}@meta.com/Shared drives/
+  └─ Softtek Time Report & Invoice - {Month} {Year}.xlsx
 ```
 
-- Mount auto-detected from `~/Library/CloudStorage/GoogleDrive-*` (any team member).
+- `{user}` is taken **dynamically from this computer's account** — derived from
+  `Path.home()` (e.g. `cortezana` → `GoogleDrive-cortezana@meta.com`). Note:
+  `os.getlogin()` is NOT used — it returns `root` in some shells.
+- If that account's mount isn't found, it **falls back to globbing**
+  `~/Library/CloudStorage/GoogleDrive-*` for a mount that contains `Shared drives`.
 - Written to the local synced folder — Drive pushes it up. `meta google.drive
   upload` is **not** used (corpnet-blocked on laptops).
-- No mount → falls back to your **home folder** with a `WARN`. Override: `--output`.
+- No mount → raises an error listing the expected path. Override: `--output`.
 
 **Weekly Hours tab:** Q1/Q2/Q3 sections; columns Employee, Role, Wave, Product,
-Pilar, then **per week only the Mon–Fri day columns + a weekly Hrs (sum) column**
-(no per-week date-range/label column), then Abs Hrs, Work Hrs, Comments, Tag. The
-`Week N` header on the top row is **merged across its whole week block**. Headers
-are **color-coded by group** with white text — identity (1-5) **navy** | each Week
-block **gold** | Abs+Work **green** | Comments+Tag **purple** — and **dark divider
-lines** frame those same groups on top of the colors (light-gray gridlines
-inside). Cell colors: PTO blue, PTO(PA)/ML yellow, Holiday purple, Bench gray,
-Out-of-project (`O`) gray, Emergency red, Backup cream, Totals green.
+Pilar, then **one Hrs column per week** (no individual day columns), then Abs Hrs,
+Work Hrs, Comments, Tag. Each `Week N` header sits on row 1 above its single Hrs
+column. Headers are **color-coded by group** with white text — identity (1-5)
+**navy** | Weeks **gold** | Abs+Work **green** | Comments+Tag **purple** — and
+**dark divider lines** frame those same groups (light-gray gridlines inside).
+Row colors: Emergency red (absence > 80h), Backup cream, Totals green.
 
 **Invoice tab:** built by **filling the template** `assets/Monthly Billing Report -
 Template.xlsx` (bill/ship to, PO, footer and styling all come from it). Only the
@@ -185,8 +188,8 @@ collaborator's Tag cell in Weekly Hours (not static text). Everything written us
 The Invoice uses **formulas**, so a manual edit to a collaborator's hours in
 Weekly Hours flows into the Invoice **without re-running the skill**:
 
-- **Work Hrs** (Weekly Hours) = `SUM(weekly Hrs cells)` → editing any weekly Hrs
-  cell recalculates that collaborator's Work Hrs.
+- **Work Hrs** (Weekly Hours) = `SUM(Week 1 Hrs, Week 2 Hrs, …)` → editing any
+  week's Hrs cell recalculates that collaborator's Work Hrs.
 - **QTY** (Invoice) = `='Weekly Hours'!<cell>` → that same collaborator's **Work
   Hrs** cell, so the change lands on the matching Invoice line.
 - **DESCRIPTION** (Invoice, column C) = `='Weekly Hours'!<cell>` → that
