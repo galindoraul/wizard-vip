@@ -185,7 +185,8 @@ def main():
     print("Building billing...")
     billing = build_billing(weekly, rates)
     print(
-        f"  Subtotal: ${billing['subtotal']:,.2f}  Discount {billing['discountRate']*100:.0f}%: ${billing['discountAmount']:,.2f}  Total: ${billing['total']:,.2
+        f"  Subtotal: ${billing['subtotal']:,.2f}  Discount {billing['discountRate']*100:.0f}%: ${billing['discountAmount']:,.2f}  Total: ${billing['total']:,.2f}"
+    )
     print("Writing combined workbook (Weekly Hours + Invoice from template)...")
     if not TEMPLATE_PATH.exists():
         print(f"ERROR: invoice template not found at {TEMPLATE_PATH}")
