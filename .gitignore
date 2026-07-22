@@ -1,6 +1,3 @@
 config.json
 .DS_Store
 .DS_Storee
-
-# weekly-hours-report skill — pay data & regenerable cache
-.claude/skills/weekly-hours-report/assets
