@@ -5,7 +5,6 @@
 .claude/skills/click2sync-weekly-report/scripts/build-report.py
 .claude/skills/weekly-hours-report/SKILL.md
 .claude/skills/weekly-hours-report/assets/Monthly Billing Report - Template.xlsx
-.claude/skills/weekly-hours-report/assets/rates.json
 .claude/skills/weekly-hours-report/scripts/billing.py
 .claude/skills/weekly-hours-report/scripts/core.py
 .claude/skills/weekly-hours-report/scripts/main.py
