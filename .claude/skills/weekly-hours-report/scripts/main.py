@@ -38,8 +38,10 @@ from core import (
 )
 from openpyxl import load_workbook
 
-# Output goes straight into the root of the "Shared drives" mount (no subfolder).
-DRIVE_OUTPUTS_REL = "Shared drives"
+# Output goes into the "Softtek - Time Report & Invoice" shared drive (the "Shared
+# drives" root itself is a virtual container — files written there are discarded on
+# sync, so we must target an actual shared drive folder).
+DRIVE_OUTPUTS_REL = "Shared drives/Softtek - Time Report & Invoice"
 
 
 def resolve_output_path(month, year, override):

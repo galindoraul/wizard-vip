@@ -147,19 +147,21 @@ abbreviations** (`Jul 2026`), never Spanish (no "Julio 2026").
 
 ## Output
 
-Saved into the **root of the `Shared drives` mount** via the synced Google Drive
-for Desktop mount:
+Saved into the **`Softtek - Time Report & Invoice` shared drive** via the synced
+Google Drive for Desktop mount:
 
 ```
-~/Library/CloudStorage/GoogleDrive-{user}@meta.com/Shared drives/
+~/Library/CloudStorage/GoogleDrive-{user}@meta.com/Shared drives/Softtek - Time Report & Invoice/
   └─ Softtek Time Report & Invoice - {Month} {Year}.xlsx
 ```
 
+- The **`Shared drives` root is a virtual container** — files written directly there
+  are silently discarded on sync, so output must go inside an actual shared drive.
 - `{user}` is taken **dynamically from this computer's account** — derived from
   `Path.home()` (e.g. `cortezana` → `GoogleDrive-cortezana@meta.com`). Note:
   `os.getlogin()` is NOT used — it returns `root` in some shells.
 - If that account's mount isn't found, it **falls back to globbing**
-  `~/Library/CloudStorage/GoogleDrive-*` for a mount that contains `Shared drives`.
+  `~/Library/CloudStorage/GoogleDrive-*` for a mount that contains the shared drive.
 - Written to the local synced folder — Drive pushes it up. `meta google.drive
   upload` is **not** used (corpnet-blocked on laptops).
 - No mount → raises an error listing the expected path. Override: `--output`.
