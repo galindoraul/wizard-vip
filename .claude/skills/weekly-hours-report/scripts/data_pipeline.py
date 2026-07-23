@@ -347,7 +347,7 @@ def read_pto(month, year, pto_path):
 # ===========================================================================
 # Output path
 # ===========================================================================
-DRIVE_OUTPUTS_REL = "Shared drives/Meta - STK/Project Tracking/Automation"
+DRIVE_OUTPUTS_REL = "Shared drives/Softtek - Time Report & Invoice"
 
 
 def resolve_output_path(month, year, override):
