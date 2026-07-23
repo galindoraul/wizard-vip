@@ -22,7 +22,6 @@ from billing_report_builder import (
     RATES_PATH_DEFAULT,
     TEMPLATE_PATH,
     write_invoice_sheet,
-    write_rates_template,
 )
 from openpyxl import load_workbook, Workbook
 from report_builder import build_report
@@ -122,7 +121,7 @@ def month_tab_candidates(month, year):
 # ===========================================================================
 DEFAULT_SHEET_ID = "1Vae2OUAdYT3pMAQLLSYcNRBFklJ2WybctNia6OjNK_g"
 TEAM_TAB = "Team allocation 2026"
-TEAM_RANGE = "A1:G500"
+TEAM_RANGE = "A1:H500"
 MONTH_RANGE = "A1:AC200"
 SHEET_CACHE_MAX_AGE = 10 * 60  # 10 minutes
 
@@ -406,10 +405,10 @@ def main():
         rates = load_rates(rates_path)
         missing = check_rates(team, rates)
         if missing:
-            write_rates_template(rates_path, team, rates)
-            print(f"\nMISSING RATES ({len(missing)}) — fill in {rates_path}:")
+            print(f"\nMISSING RATES ({len(missing)}):")
             for n in missing:
                 print(f"  - {n}")
+            print(f"\nAdd their rates to {rates_path} and re-run.")
             sys.exit(2)
         print(f"\nAll {len(team)} rates OK. Ready.")
         sys.exit(0)
@@ -434,8 +433,10 @@ def main():
     rates = load_rates(rates_path)
     missing = check_rates(team, rates)
     if missing:
-        write_rates_template(rates_path, team, rates)
-        print(f"MISSING RATES ({len(missing)}) — fill {rates_path}")
+        print(f"MISSING RATES ({len(missing)}):")
+        for n in missing:
+            print(f"  - {n}")
+        print(f"\nAdd their rates to {rates_path} and re-run.")
         sys.exit(2)
 
     weekly = build_report(pto, team, month, year)

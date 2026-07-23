@@ -127,18 +127,6 @@ def check_rates(team_data, rates):
     return missing
 
 
-def write_rates_template(path, team_data, existing):
-    """Write/refresh rates.json with every collaborator (existing values kept, missing -> 0)."""
-    data = {}
-    for c in team_data:
-        name = c["short_name"]
-        if not name:
-            continue
-        r = existing.get(normalize_value(name))
-        data[name] = r if (r and r > 0) else 0
-    Path(path).write_text(json.dumps(data, indent=2, ensure_ascii=False))
-
-
 # ===========================================================================
 # Build billing from the weekly report + rates
 # ===========================================================================
